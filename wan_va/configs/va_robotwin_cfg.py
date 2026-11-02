@@ -38,6 +38,9 @@ va_robotwin_cfg.empty_text_emb_path = os.environ.get(
     "EMPTY_TEXT_EMB_PATH", str(_default_empty_text_emb_path)
 )
 va_robotwin_cfg.use_icl_model = True
+va_robotwin_cfg.text_encoder_offload = os.environ.get(
+    "TEXT_ENCODER_OFFLOAD", "0"
+) == "1"
 
 va_robotwin_cfg.attn_window = 64
 va_robotwin_cfg.frame_chunk_size = 2
