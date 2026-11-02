@@ -44,10 +44,27 @@ import numpy as np
 from pathlib import Path
 from scipy.spatial.transform import Rotation as R
 import json
+import faulthandler
+import time
 from pathlib import Path
 
 from evaluation.robotwin.websocket_client_policy import WebsocketClientPolicy
 from evaluation.robotwin.test_render import Sapien_TEST
+
+def diagnostic_call(label, function, *args, **kwargs):
+    """Optionally bracket a blocking simulator/server call with timestamps."""
+    if os.environ.get("ZERO_WAM_DIAGNOSTICS") != "1":
+        return function(*args, **kwargs)
+    started = time.monotonic()
+    print(f"[DIAG {datetime.now().isoformat(timespec='seconds')}] BEGIN {label}", flush=True)
+    try:
+        result = function(*args, **kwargs)
+    except BaseException:
+        print(f"[DIAG] FAILED {label} after {time.monotonic() - started:.1f}s", flush=True)
+        raise
+    print(f"[DIAG {datetime.now().isoformat(timespec='seconds')}] END {label} "
+          f"({time.monotonic() - started:.1f}s)", flush=True)
+    return result
 
 def write_json(data: dict, fpath: Path) -> None:
     """Write data to a JSON file.
@@ -626,7 +643,7 @@ def eval_policy(task_name,
             f"video={icl_video_path} latent={icl_latent_path or 'MP4_FALLBACK'}",
             flush=True,
         )
-        ret = model.infer(
+        ret = diagnostic_call("server reset / human-context cache", model.infer,
             dict(
                 reset=True,
                 prompt=prompt,
@@ -644,7 +661,7 @@ def eval_policy(task_name,
         gen_video_list = []
         full_action_history = []
 
-        initial_obs = TASK_ENV.get_obs() 
+        initial_obs = diagnostic_call("initial TASK_ENV.get_obs / camera capture", TASK_ENV.get_obs)
         inint_eef_pose = initial_obs['endpose']['left_endpose'] + \
         [initial_obs['endpose']['left_gripper']] + \
         initial_obs['endpose']['right_endpose'] + \
@@ -655,10 +672,10 @@ def eval_policy(task_name,
         first_obs = None
         while TASK_ENV.take_action_cnt<TASK_ENV.step_lim:
             if first:
-                observation = TASK_ENV.get_obs()
+                observation = diagnostic_call("first-chunk camera capture", TASK_ENV.get_obs)
                 first_obs = format_obs(observation, prompt)
 
-            ret = model.infer(dict(obs=first_obs, prompt=prompt, save_visualization=save_visualization, video_guidance_scale=video_guidance_scale, action_guidance_scale=action_guidance_scale)) #(TASK_ENV, model, observation)
+            ret = diagnostic_call("action-chunk inference", model.infer, dict(obs=first_obs, prompt=prompt, save_visualization=save_visualization, video_guidance_scale=video_guidance_scale, action_guidance_scale=action_guidance_scale))
             action = ret['action']
             if 'video' in ret:
                 imagined_video = ret['video']
@@ -809,7 +826,9 @@ def parse_args_and_config():
 
 
 if __name__ == "__main__":
-    
+    if os.environ.get("ZERO_WAM_DIAGNOSTICS") == "1":
+        faulthandler.enable()
+        faulthandler.dump_traceback_later(180, repeat=True)
     Sapien_TEST()
     usr_args = parse_args_and_config()
     main(usr_args)
