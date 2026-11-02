@@ -558,12 +558,11 @@ def eval_policy(task_name,
                 args["render_freq"] = render_freq
                 continue
             except Exception as e:
-                TASK_ENV.close_env()
-                now_seed += 1
                 args["render_freq"] = render_freq
-                print(f"error occurs ! {e}")
-                traceback.print_exc()
-                continue
+                raise RuntimeError(
+                    f"Expert setup failed for {task_name}, seed {now_seed}; "
+                    "stopping instead of retrying a potentially broken environment."
+                ) from e
 
         if (not expert_check) or (TASK_ENV.plan_success and TASK_ENV.check_success()):
             succ_seed += 1
