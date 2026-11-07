@@ -20,6 +20,8 @@ visualization/
 results/
 outputs/
 train_out/
+implementation/
+jobs/
 checkpoints/
 data/
 

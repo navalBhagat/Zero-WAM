@@ -50,6 +50,9 @@ class VA_Server:
         self.dtype = job_config.param_dtype
         self.device = torch.device(f"cuda:{job_config.local_rank}")
         self.enable_offload = getattr(job_config, 'enable_offload', True)  # offload vae & text_encoder to save vram
+        self.text_encoder_offload = self.enable_offload or getattr(
+            job_config, 'text_encoder_offload', False
+        )
 
         self.scheduler = FlowMatchScheduler(shift=self.job_config.snr_shift,
                                             sigma_min=0.0,
@@ -76,7 +79,20 @@ class VA_Server:
         self.text_encoder = load_text_encoder(
             resolve_model_component(model_root, 'text_encoder'),
             torch_dtype=self.dtype,
-            torch_device='cpu' if self.enable_offload else self.device,
+            torch_device='cpu' if self.text_encoder_offload else self.device,
+        )
+        text_weight_gib = sum(
+            parameter.numel() * parameter.element_size()
+            for parameter in self.text_encoder.parameters()
+        ) / (1024 ** 3)
+        logger.info(
+            "Component placement: text_encoder=%s (%.2f GiB parameters), vae=%s; "
+            "CUDA allocated=%.2f GiB, reserved=%.2f GiB",
+            next(self.text_encoder.parameters()).device,
+            text_weight_gib,
+            next(self.vae.parameters()).device,
+            torch.cuda.memory_allocated(self.device) / (1024 ** 3),
+            torch.cuda.memory_reserved(self.device) / (1024 ** 3),
         )
 
         empty_text_emb_path = getattr(job_config, "empty_text_emb_path", "")
@@ -647,6 +663,14 @@ class VA_Server:
         self.streaming_vae.clear_cache()
         if self.streaming_vae_half is not None:
             self.streaming_vae_half.clear_cache()
+        logger.info(
+            "[ICL] reset complete: CUDA allocated=%.2f GiB, reserved=%.2f GiB; "
+            "text_encoder=%s, prompt_embeddings=%s",
+            torch.cuda.memory_allocated(self.device) / (1024 ** 3),
+            torch.cuda.memory_reserved(self.device) / (1024 ** 3),
+            next(self.text_encoder.parameters()).device,
+            self.prompt_embeds.device,
+        )
 
     def _pack_icl_cfg(self, input_dict, mode, cache_type):
         stream_key = "latent_res_lst" if mode == "video" else "action_res_lst"

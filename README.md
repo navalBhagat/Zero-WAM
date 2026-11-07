@@ -91,6 +91,13 @@ Robotwin evaluation also requires a working Robotwin 2.0 installation. Follow th
 
 https://robotwin-platform.github.io/doc/usage/robotwin-install.html
 
+For this project's pinned environment/patch flow, use [INSTALL.md](INSTALL.md)
+and [setup/robotwin](setup/robotwin/README.md) instead of rerunning the unpinned
+upstream installer. For quota-aware, resumable checkpoint/data downloads on a
+cluster, use [setup/zerowam](setup/zerowam/README.md). Its default evaluation
+profile fetches only the fixed human references and latents needed for live
+evaluation; the broader datasets below are for offline/training use as well.
+
 See [INSTALL.md](INSTALL.md) for the exact tested environment (Python 3.10, PyTorch 2.9.0, CUDA 12.6), the tested Robotwin revision, and **the two unseen-task success-condition updates**. Run all commands below from the repository root.
 
 ```bash
