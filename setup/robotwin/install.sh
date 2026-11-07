@@ -119,7 +119,8 @@ case "$STAGE" in
     verify) verify ;;
     assets)
         cd "$ROBOTWIN_ROOT"
-        run_env bash script/_download_assets.sh
+        # The upstream script otherwise continues after failed downloads/unzip.
+        run_env bash -eo pipefail script/_download_assets.sh
         ;;
     gpu-check)
         cd "$ROBOTWIN_ROOT"
