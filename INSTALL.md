@@ -1,58 +1,24 @@
-# Installation and evaluation setup
+# Installation
 
-Use two separate environments: `zerowam` for model inference and `robotwin`
-for the simulator/evaluation client. Keep source code in persistent storage and
-large assets/checkpoints in storage with sufficient personal quota. None of the
-download steps requires a GPU.
+Run commands from the Zero-WAM repository root. Use separate Conda environments
+for **Zero-WAM inference** and **RoboTwin simulation**.
 
-## 1. Plan storage before installation or downloads
+## Requirements
 
-```bash
-quota -s
-df -h "$HOME" /var/scratch/"$USER"
-du -sh ~/.cache ~/Robotwin /var/scratch/"$USER" 2>/dev/null
-```
+- Linux x86-64, Conda, Git, and internet access.
+- An NVIDIA GPU and working Vulkan support for simulator evaluation.
+- A CUDA toolkit and compatible C++ compiler for source builds.
+- Shared storage with sufficient personal quota. The checkpoint alone is about
+  35 GB; allow additional space for environments, assets, data, and extraction.
 
-Paths and quota tools vary by cluster. `df` reports shared filesystem capacity,
-not your personal allowance. The RoboTwin checkpoint is approximately 35 GB;
-allow additional space for environments, simulation assets, data, and temporary
-files. Our DAS5 account had a 4 GiB home soft quota and a 40 GiB scratch soft
-quota; with roughly 33 GiB already on scratch, the checkpoint did not fit.
-Request more suitable storage before starting it. Do not rely on quota grace.
+Check your quota before downloading. Filesystem free space (`df -h`) is not your
+personal allowance. Keep large files outside a small home directory. Initialize
+Conda with `source /path/to/conda/etc/profile.d/conda.sh` if needed. On a managed
+cluster, load its modules and use allocated compute resources for builds/runs.
 
-Pip caches can be purged without uninstalling packages:
+## 1. Zero-WAM environment
 
-```bash
-python -m pip cache info
-python -m pip cache purge
-```
-
-Set `PIP_CACHE_DIR` to suitable external storage in future installation jobs.
-Do not change `HF_HOME` just to relocate downloads: it can hide an existing HF
-login. Use the explicit storage-root option described below. Scratch may expire
-and may not be backed up; preserve a restoration recipe and unique results.
-
-## 2. Initialize Conda and prepare Zero-WAM
-
-Initialize Conda using the installation on your cluster, for example on our DAS5
-account:
-
-```bash
-source /var/scratch/nbhagat/miniforge3/etc/profile.d/conda.sh
-```
-
-On Snellius, load the available Conda/CUDA modules instead; exact versions are
-cluster-specific. Do not reuse Snellius module names on DAS5.
-
-The tested Zero-WAM stack is Python 3.10, PyTorch 2.9.0, CUDA 12.6. If `zerowam`
-already works, activate it rather than reinstalling:
-
-```bash
-conda activate zerowam
-python -m pip check
-```
-
-For a fresh inference environment:
+Skip creation if your `zerowam` environment already works.
 
 ```bash
 conda create -n zerowam python=3.10 -y
@@ -65,164 +31,167 @@ python -m pip install -e . --no-deps
 python -m pip check
 ```
 
-Run these commands from the Zero-WAM checkout. For training, see README.md and
-`requirements.txt`; training dependencies are not required for this baseline.
-The Snellius environment exports are records of installed versions, not complete
-portable installers. CUDA-suffixed PyTorch pins require the PyTorch CUDA index.
+The validated inference configuration uses A100, BF16/FlexAttention, and text-only
+CPU offload. Older GPUs may require precision/kernel changes; multiple GPUs do
+not automatically pool their memory. Training dependencies are separate; see
+[the archived README](old_readme.md#training).
 
-The successful baseline used an A100 with BF16/FlexAttention and text-only CPU
-offloading. Installation success does not establish that this model works on
-Titan RTX: precision, attention kernels, memory fit, and any model splitting need
-separate validation. Two GPUs do not automatically pool their memory.
+## 2. RoboTwin environment
 
-## 3. Prepare RoboTwin separately
-
-Follow [setup/robotwin/README.md](setup/robotwin/README.md). From this checkout:
+The project installer pins RoboTwin and its source dependencies and applies the
+required compatibility/evaluation patches. Do not run RoboTwin's upstream full
+installer afterward.
 
 ```bash
 export ROBOTWIN_ROOT="$HOME/Robotwin"
 bash setup/robotwin/install.sh base
-```
 
-In allocated build resources, load a compatible toolkit/compiler, set the actual
-target GPU architecture, then build source dependencies:
-
-```bash
-# A100 = 8.0; Titan RTX = 7.5. This is a build target, not a model compatibility guarantee.
-export TORCH_CUDA_ARCH_LIST="7.5"
+# Load a compatible CUDA toolkit/compiler before this stage.
+# Use your GPU's compute capability: A100 = 8.0, Titan RTX = 7.5.
+export TORCH_CUDA_ARCH_LIST="8.0"
 bash setup/robotwin/install.sh source
 ```
 
-This recipe uses RoboTwin `2eeec322`, PyTorch 2.4.1, pinned PyTorch3D and CuRobo
-v0.7.8, setuptools below 81, msgpack, and our observed Warp pin. It applies the
-SAPIEN/MPLib patches and the two evaluation success-condition patches. Do not
-subsequently run the full upstream installer: it can overwrite these choices.
-The detailed guide covers existing environments and resumable stages.
+The default environment name is `robotwin`. To preserve an existing environment,
+set `ROBOTWIN_ENV=robotwin-new` before **every** stage. To intentionally update
+an existing one, rerun `base` with `ALLOW_EXISTING_ENV=1`. Failed source builds
+can be retried with `source`; local Git changes are not discarded.
 
-## 4. Obtain simulator assets, with enough space for extraction
+Pins: RoboTwin `2eeec322`, PyTorch 2.4.1/CUDA 12.1, CuRobo `v0.7.8`, and PyTorch3D
+commit `75ebeeaea0908c5527e7b1e305fbc7681382db47`. Python dependencies are in
+`setup/robotwin/requirements.lock.txt`. This is a package snapshot and build
+recipe, not a container image or a guarantee of compatibility with every driver.
 
-RoboTwin simulation assets are separate from HumanGen and the model checkpoint.
-They contain object/robot geometry and textures. Run the CPU asset stage:
+## 3. Simulator assets
+
+Assets are separate from HumanGen. No GPU is needed for downloading them.
 
 ```bash
 bash setup/robotwin/install.sh assets
 bash setup/robotwin/install.sh verify
 ```
 
-Assets normally live under `$ROBOTWIN_ROOT/assets`. If home is small, move that
-directory to suitable shared storage and symlink it back BEFORE downloading.
-Keep the repository and editable CuRobo checkout in place. Check both bytes and
-file quotas. Extraction needs room for archives and extracted content together.
-A partially extracted directory is not a completed asset installation.
+Assets live under `$ROBOTWIN_ROOT/assets`. For external storage, move that
+folder and symlink it back before downloading. Keep the repository and editable
+CuRobo checkout in place. Extraction needs space for both archives and their
+contents. If extraction fails, fix storage and rerun; imports do not verify assets.
 
-## 5. Authenticate and plan checkpoint / HumanGen downloads
+## 4. Checkpoint and HumanGen downloads
 
-Activate `zerowam` and log in once on the cluster:
+Activate `zerowam` and authenticate once. Never put tokens in scripts.
 
 ```bash
 conda activate zerowam
 hf auth login
 hf auth whoami
+export STORAGE_ROOT=/path/to/large/shared/zero-wam
+
+# Plan only: shows selected files, revisions, and required space.
+bash setup/zerowam/download.sh all --storage-root "$STORAGE_ROOT"
 ```
 
-Never put tokens in scripts. Jobs normally see saved credentials through the
-shared home directory; keep `HF_HOME`/token settings consistent. See
-[setup/zerowam/README.md](setup/zerowam/README.md) for download and CPU Slurm
-instructions.
-
-The default only reads Hub metadata and prints a size plan:
+After confirming sufficient personal quota, replace `REMAINING_GIB` with your
+actual remaining allowance and download:
 
 ```bash
-bash setup/zerowam/download.sh all --storage-root /path/to/large/shared/zero-wam
+bash setup/zerowam/download.sh all --storage-root "$STORAGE_ROOT" \
+  --quota-free-gib REMAINING_GIB --download --link
 ```
 
-After securing sufficient personal quota, execute the plan using the actual
-remaining allowance from `quota -s` (in GiB):
+| Option | Purpose |
+| --- | --- |
+| `checkpoint`, `dataset`, or `all` | Select what to fetch |
+| `--profile eval` (default) | Seven fixed human videos, their VAE latents, and ICL manifests |
+| `--profile robotwin` | Full simulation subset, including recorded robot videos/actions/latents |
+| `--workers 1` | Reduce request concurrency; default is 2 |
+| `--link` | Create repository paths expected by inference; refuse conflicting existing paths |
+
+Live evaluation uses human references and simulator observations; recorded robot
+trajectories are optional. Rerun the same command to resume, preserving destination
+`.cache` metadata. Resolved revisions/completion are saved in `download-manifest.json`.
+Use a new storage root for a different revision. Run one downloader per root.
+On rate limiting, wait, verify authentication, and retry. The space estimate adds
+2 GiB headroom but cannot reserve quota or account for other concurrent writes.
+
+For a **CPU-only Slurm job**, initialize required modules in your submission shell:
 
 ```bash
-bash setup/zerowam/download.sh all \
-  --storage-root /path/to/large/shared/zero-wam \
-  --quota-free-gib YOUR_REMAINING_GIB --download --link
+export ZERO_WAM_ROOT="$PWD"
+export CONDA_BASE="$(conda info --base)"
+sbatch setup/zerowam/download.sbatch all --storage-root "$STORAGE_ROOT" \
+  --quota-free-gib REMAINING_GIB --download --link
 ```
 
-The default `eval` profile selects only the fixed seven human references, their
-VAE latents, and ICL manifests. It does NOT download recorded robot trajectories:
-live evaluation uses simulator observations. Use `--profile robotwin` explicitly
-for the full simulation subset, including recorded robot videos/actions/latents.
-Neither profile downloads the external pretraining corpus.
+Set partition, account, and an allowed walltime using your scheduler's options.
+The template defaults to 15 minutes; transfers may need longer. Optional emails:
+`sbatch --mail-type=BEGIN,END,FAIL --mail-user=you@example.org ...`.
+Saved login credentials must be visible to the job; changing `HF_HOME` can hide
+those credentials. Downloads default Xet chunk caching to the storage root.
 
-The script records resolved Hub commits, resumes against those revisions, uses
-two workers, checks personal-budget and filesystem headroom, and verifies file
-sizes after download. Keep destination `.cache` files to reuse completed work.
-If rate-limited, stop duplicate jobs, wait, verify login, and rerun the same
-command. No forced redownload is needed. Run only one downloader per storage root.
+## 5. Verify GPU execution and task cameras
 
-`--link` creates the paths existing launchers expect, refusing to overwrite an
-existing directory or conflicting link:
-
-```text
-Zero-WAM/checkpoints/zero-wam-posttrain-robotwin -> external checkpoint
-Zero-WAM/data/HumanGen -> external HumanGen
-```
-
-## 6. GPU verification, then actual camera capture
-
-Only in an allocated GPU node:
+Inside an allocated GPU node:
 
 ```bash
 bash setup/robotwin/install.sh gpu-check
+conda activate robotwin
+python setup/robotwin/check_camera.py --output results/camera-check
 ```
 
-This checks GPU availability/planner imports, not a complete rollout. Then test
-actual RoboTwin task camera images without loading Zero-WAM. Renderer
-initialization alone is insufficient. A missing Vulkan module does not prove
-Vulkan is absent; offscreen rendering still needs functioning graphics drivers.
-Do not install drivers or use `sudo apt` on managed cluster nodes.
+Use your custom environment name if applicable. The camera check loads the real
+`place_empty_cup` scene and saves head/wrist images without Zero-WAM. It is not a
+motion-planning or policy-success test. Stop on errors before launching evaluation.
 
-Warp CUDA initialization warnings remain unresolved in our recovered environment,
-although one Snellius rollout completed. Investigate failed GPU checks rather
-than silently treating them as success. Camera success alone does not establish
-motion-planner correctness.
+Vulkan is needed even without a GUI. A missing Vulkan module or an initialization
+warning alone does not establish failure; actual camera capture is the check.
+Do not install system drivers on managed nodes. Warp 1.6.0 can emit CUDA errors on
+some drivers; successful imports or camera capture do not validate planner CUDA.
 
-## 7. One closed-loop episode before scaling up
+## 6. Run one evaluation episode
 
-Server and simulator client use separate environments on the same allocated
-node, communicating through a local port. Set:
+Use two shells on the **same allocated GPU node**, each from this repository root.
+The first starts Zero-WAM; the second runs RoboTwin. Text offload keeps the text
+encoder on CPU and the VAE/transformer on GPU.
+
+Server shell:
 
 ```bash
+conda activate zerowam
 export MODEL_PATH="$PWD/checkpoints/zero-wam-posttrain-robotwin"
-export ROBOTWIN_ROOT="$HOME/Robotwin"
 export TEXT_ENCODER_OFFLOAD=1
+bash evaluation/robotwin/launch_server.sh
 ```
 
-Launch `evaluation/robotwin/launch_server.sh` in `zerowam`, wait for `/healthz`,
-then run in `robotwin`:
+Client shell, after the server reports ready:
 
 ```bash
+conda activate robotwin
+export ROBOTWIN_ROOT="$HOME/Robotwin"
 TEST_NUM=1 SEED=0 ICL_CFG=5 TARGET_TEXT_CFG=-1 \
   bash evaluation/robotwin/launch_client.sh "$PWD/results/smoke" place_empty_cup
 ```
 
-The native baseline uses human-video ICL + CFG; it is not a language-only test.
-Our successful A100 run used text-only CPU offload, peaked at approximately
-34.53 GiB, and took 8 min 50 sec including startup. This is one observed run,
-not a guarantee for another GPU/task. GPU memory monitoring, bounded startup/client
-timeouts, readiness checks, and server cleanup should be included in batch jobs.
-Personal diagnostic templates in ignored `implementation/` are not distributed
-installation requirements. Adapt scheduler/module settings for your cluster.
+Metrics are saved under `results/smoke/stseed-*/metrics/place_empty_cup/res.json`;
+rollout videos are under the corresponding `visualization` directory. Confirm
+`total_num=1`, inspect the video, and stop the server when finished. One completed
+episode is a smoke test, not a success-rate estimate. The client default is 100
+episodes; set `TEST_NUM` explicitly. Native ICL + CFG is not language-only guidance.
 
-Confirm completed metrics (`total_num=1`), inspect the rollout video, and record
-runtime/memory before scheduling multiple episodes. A failed task with completed
-metrics is a valid rollout; a crash/hang is not a task-success measurement.
+For batch evaluation, include readiness checks, a time limit, GPU memory logging,
+and server cleanup. The archived README describes the eight-GPU launcher: it runs
+independent server/client pairs, not one model split across eight GPUs.
 
-## Evaluation criteria and records
+## Reproducibility and troubleshooting
 
-The RoboTwin installer applies revised criteria for `move_stapler_pad` (released
-stapler contacting and within the pad, independent of yaw) and `stamp_seal`
-(position tolerance 3 cm rather than 1 cm). Document those criteria in results;
-backups use `.zerowam-upstream` with the project installer.
-
-Keep environment package records, source revisions, patches, checkpoint/data
-manifest, task/reference, scene and sampling seeds, offload settings, and metrics
-with experiments. The full paper protocol uses 100 episodes per task per seed;
-one smoke episode is not a reproduction of the reported success rate.
+- Installer records are in `$ROBOTWIN_ROOT/.zero-wam-setup/`; keep source checkouts
+  because CuRobo is editable. Retain checkpoint/data manifests with results.
+- Modified sources have `.zerowam-upstream` backups. Evaluation patches change
+  `move_stapler_pad` and `stamp_seal` criteria; document these in comparisons.
+- `No module named msgpack`: verify the client is using the installed `robotwin`
+  environment. `pkg_resources` failures: preserve the pinned setuptools below 81.
+- Disk quota failures: check caches, archives, and personal quota before retrying;
+  no dependency reinstall is needed. Temporary storage may expire and lack backups.
+- GPU hangs: inspect both server and client logs and measure memory. Renderer
+  initialization alone does not prove camera capture works alongside the model.
+- Setup scripts have local syntax/offline tests. Validate builds and execution on
+  your target hardware before collecting results.

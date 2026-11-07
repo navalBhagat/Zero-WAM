@@ -1,4 +1,4 @@
-# Python package snapshot from the working Snellius environment.
+# Python package snapshot for the validated RoboTwin environment.
 # PyTorch and source-built packages are installed separately by install.sh.
 adal==1.2.7
 addict==2.4.0
