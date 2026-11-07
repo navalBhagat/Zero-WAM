@@ -19,6 +19,12 @@ The post-training dependencies, including LeRobot 0.3.3, are included in
 
 ## Robotwin Environment
 
+For the project-owned, staged installer that reproduces our Snellius package
+snapshot and source patches on another Linux cluster, see
+[setup/robotwin/README.md](setup/robotwin/README.md). Use that recipe instead of
+rerunning the unpinned upstream installer. GPU/driver compatibility still needs
+to be checked on the target cluster.
+
 Robotwin evaluation requires a separate Robotwin 2.0 environment. The server
 and client may use different Python environments, but they must run on the same
 machine so the client can connect to the local inference ports.
