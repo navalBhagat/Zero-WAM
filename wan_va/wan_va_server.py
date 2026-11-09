@@ -489,27 +489,9 @@ class VA_Server:
         return frames.permute(1, 0, 2, 3).unsqueeze(0).contiguous()
 
     def _reshape_icl_latent(self, latent, item):
-        if not torch.is_tensor(latent):
-            raise ValueError("ICL latent must be a tensor")
-        layout = str(item.get("latent_layout", "")).lower().replace("_", " ")
-        if latent.ndim == 5:
-            if latent.shape[0] != 1:
-                raise ValueError(f"ICL latent batch must be 1, got {latent.shape}")
-            return latent.contiguous()
-        if latent.ndim == 4:
-            if layout in ("f h w c", "f h w d"):
-                return latent.permute(3, 0, 1, 2).unsqueeze(0).contiguous()
-            return latent.unsqueeze(0).contiguous()
-        if latent.ndim == 2:
-            f = int(item["latent_num_frames"])
-            h = int(item["latent_height"])
-            w = int(item["latent_width"])
-            if latent.shape[0] != f * h * w:
-                raise ValueError(
-                    f"Flattened ICL latent {latent.shape} does not match {(f, h, w)}"
-                )
-            return latent.view(f, h, w, -1).permute(3, 0, 1, 2).unsqueeze(0)
-        raise ValueError(f"Unsupported ICL latent shape: {latent.shape}")
+        from .guidance.reference import reshape_latent
+
+        return reshape_latent(latent, item)
 
     def _load_or_encode_icl(self, video_path, latent_path):
         if latent_path and os.path.exists(latent_path):
@@ -613,17 +595,45 @@ class VA_Server:
                 raise ValueError("Use nonnegative external strength and positive interval")
             if self.env_type == "robotwin_tshape":
                 raise ValueError("External guidance requires width-concatenated cameras")
-            if not icl_video_path:
-                raise ValueError("Guidance requires the human MP4 even with cached ICL latents")
+            from .guidance.reference import reconstructed_reference, decoder_on_cpu
+
+            torch.backends.cuda.matmul.allow_tf32 = False
+            torch.backends.cudnn.allow_tf32 = False
+            source = getattr(self.job_config, "external_reference_source", "auto")
+            start, stop = self.job_config.reference_start, self.job_config.reference_stop
+            if source not in ("auto", "video", "latent"):
+                raise ValueError("EXTERNAL_REFERENCE_SOURCE must be auto, video, or latent")
+            use_latent = source == "latent" or (
+                source == "auto" and not os.path.isfile(icl_video_path or "")
+            )
             if not hasattr(self, "external_reward"):
+                decoder_dtype = getattr(self.job_config, "external_decoder_dtype", "float32")
+                if decoder_dtype not in ("float32", "bfloat16"):
+                    raise ValueError("EXTERNAL_DECODER_DTYPE must be float32 or bfloat16")
                 self.external_reward = DinoReward(
                     self.vae, self.job_config.dino_checkpoint, self.device,
                     len(self.job_config.obs_cam_keys),
+                    decoder_dtype=getattr(torch, decoder_dtype),
                 )
-            frames = self._read_icl_video(icl_video_path)[0].permute(1, 0, 2, 3) / 255.0
-            self.external_reward.set_reference(
-                frames[self.job_config.reference_start:self.job_config.reference_stop]
-            )
+            if use_latent:
+                if not icl_latent_path or not os.path.isfile(icl_latent_path):
+                    raise FileNotFoundError("Guidance needs a human MP4 or cached human .pth")
+                logger.info("[external-guidance] reconstructing human reference on CPU: %s", icl_latent_path)
+                with decoder_on_cpu(self.vae):
+                    frames = reconstructed_reference(self.vae, icl_latent_path, start, stop)
+            else:
+                if start < 0 or stop <= start:
+                    raise ValueError("Reference indices must satisfy 0 <= start < stop")
+                frames = self._read_icl_video(icl_video_path)[0].permute(1, 0, 2, 3) / 255.0
+                frames = frames[start:stop]
+            self.external_reward.set_reference(frames)
+            self.external_reference_kind = "reconstructed_latent" if use_latent else "original_video"
+            logger.info("[external-guidance] reference=%s frames=[%s:%s] decoder_dtype=%s",
+                        self.external_reference_kind, start, stop,
+                        next(self.vae.decoder.parameters()).dtype)
+            del frames
+            # Return unused reference allocations before sampling with the WAM resident.
+            torch.cuda.empty_cache()
         self.chunk_idx = 0
         self.init_latent = None
         self.last_predicted_latents = None
@@ -774,6 +784,8 @@ class VA_Server:
             },
             grid_key: grid_id,
         }
+        # Keep persistent sampling state in FP32; only model inputs are BF16.
+        input_dict[stream_key]["noisy_latents"] = data.to(self.dtype)
         self._pack_icl_cfg(input_dict, mode, cache_type)
         return input_dict
 
@@ -798,6 +810,12 @@ class VA_Server:
             device=self.device,
             dtype=self.dtype,
         )
+        # Draw noise in the original dtype before promotion to preserve seeded draws.
+        # Opt-in permits a precision-matched zero-strength control as well.
+        if getattr(self.job_config, "external_strength", 0) or getattr(
+            self.job_config, "video_state_fp32", False
+        ):
+            latents = latents.float()
         # Consume inactive-channel noise before masking so seeded sampling stays
         # deterministic across chunks.
         _ = torch.randn_like(actions)[:, ~self.action_mask]
@@ -854,6 +872,8 @@ class VA_Server:
                     self.latent_height,
                     self.latent_width,
                 )
+                # Perform Euler arithmetic in the persistent state's precision.
+                noise = noise.to(latents.dtype)
                 base_next = self.scheduler.step(
                     noise, timestep, latents, return_dict=False
                 )
@@ -872,6 +892,9 @@ class VA_Server:
                     from .guidance.latent_guidance import guided_step
 
                     # Final cache-only pass sees the corrected video. No WAM backward.
+                    torch.cuda.synchronize(self.device)
+                    torch.cuda.reset_peak_memory_stats(self.device)
+                    allocated_before = torch.cuda.memory_allocated(self.device)
                     started = time.perf_counter()
                     def reward_fn(clean):
                         if self.chunk_idx == 0:
@@ -888,8 +911,13 @@ class VA_Server:
                     torch.cuda.synchronize(self.device)
                     stats.update(chunk=self.chunk_idx, step=step,
                                  seconds=time.perf_counter() - started,
+                                 allocated_before=allocated_before,
+                                 allocated_after=torch.cuda.memory_allocated(self.device),
                                  peak_allocated=torch.cuda.max_memory_allocated(self.device),
-                                 peak_reserved=torch.cuda.max_memory_reserved(self.device))
+                                 peak_reserved=torch.cuda.max_memory_reserved(self.device),
+                                 state_dtype=str(latents.dtype),
+                                 reference=self.external_reference_kind)
+                    stats["guidance_extra_peak"] = stats["peak_allocated"] - allocated_before
                     logger.info("[external-guidance] %s", stats)
                 else:
                     latents = base_next

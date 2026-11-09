@@ -639,10 +639,10 @@ def eval_policy(task_name,
             icl_video_path = select_icl_video(
                 args["icl_video_mapping"], task_name, args["icl_seed"], now_id,
             )
-            if args["use_icl"]:
-                icl_latent_path = resolve_icl_latent_path(
-                    icl_video_path, args["icl_latent_root"]
-                )
+            # Native ICL and reconstructed DINO references both use this cache.
+            icl_latent_path = resolve_icl_latent_path(
+                icl_video_path, args["icl_latent_root"]
+            )
         print(
             f"[ICL] task={task_name} episode={now_id} "
             f"video={icl_video_path} latent={icl_latent_path or 'MP4_FALLBACK'}",

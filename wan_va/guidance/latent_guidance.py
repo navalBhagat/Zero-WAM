@@ -46,7 +46,12 @@ def guided_step(sample, velocity, sigma, base_next, reward_fn, strength,
     if max_norm > 0:
         grad = grad * (max_norm / norm.clamp_min(1e-12)).clamp(max=1).to(grad.dtype)
     correction = strength * grad
+    result = (base_next + correction).detach()
+    applied = result - base_next
     stats = {"reward": reward.item(), "gradient_norm": norm.item(),
              "correction_norm": correction.float().norm().item(),
-             "base_update_norm": (base_next - sample).float().norm().item()}
-    return (base_next + correction).detach(), stats
+             "base_update_norm": (base_next - sample).float().norm().item(),
+             "applied_correction_norm": applied.float().norm().item(),
+             "changed_fraction": (applied[grad != 0] != 0).float().mean().item()
+             if torch.any(grad != 0) else 0.0}
+    return result, stats

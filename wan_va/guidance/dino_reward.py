@@ -2,14 +2,18 @@
 import torch
 import torch.nn.functional as F
 
-from .latent_guidance import isolated_decode_cache
+from .reference import decode_normalized
 
 
 class DinoReward:
-    def __init__(self, vae, checkpoint, device, camera_count=3):
+    def __init__(self, vae, checkpoint, device, camera_count=3, decoder_dtype=None):
         from transformers import AutoModel
 
         self.vae = vae.eval().requires_grad_(False)
+        if decoder_dtype is not None:
+            # Encoder precision stays unchanged for streaming observations.
+            self.vae.decoder.to(dtype=decoder_dtype)
+            self.vae.post_quant_conv.to(dtype=decoder_dtype)
         self.encoder = AutoModel.from_pretrained(
             checkpoint, local_files_only=True
         ).to(device).eval().requires_grad_(False)
@@ -38,13 +42,7 @@ class DinoReward:
         if clean.shape[-1] % self.camera_count:
             raise ValueError("Expected equal camera latents concatenated along width")
         camera = clean.chunk(self.camera_count, dim=-1)[0]
-        parameter = next(self.vae.parameters())
-        camera = camera.to(device=parameter.device, dtype=parameter.dtype)
-        mean = camera.new_tensor(self.vae.config.latents_mean)[None, :, None, None, None]
-        std = camera.new_tensor(self.vae.config.latents_std)[None, :, None, None, None]
-        with isolated_decode_cache(self.vae):
-            video = self.vae.decode(camera * std + mean, return_dict=False)[0]
-        return video
+        return decode_normalized(self.vae, camera)
 
     def __call__(self, clean):
         if self.reference is None:

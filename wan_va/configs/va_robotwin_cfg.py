@@ -97,3 +97,8 @@ va_robotwin_cfg.external_max_norm = float(os.environ.get("EXTERNAL_MAX_NORM", "1
 va_robotwin_cfg.dino_checkpoint = os.environ.get("DINO_CHECKPOINT", "")
 va_robotwin_cfg.reference_start = int(os.environ.get("REFERENCE_START", "0"))
 va_robotwin_cfg.reference_stop = int(os.environ.get("REFERENCE_STOP", "1"))
+
+# Auto uses the MP4 when present, otherwise reconstructs the cached human latent.
+va_robotwin_cfg.external_reference_source = os.environ.get("EXTERNAL_REFERENCE_SOURCE", "auto")
+va_robotwin_cfg.external_decoder_dtype = os.environ.get("EXTERNAL_DECODER_DTYPE", "float32")
+va_robotwin_cfg.video_state_fp32 = os.environ.get("VIDEO_STATE_FP32", "0") == "1"

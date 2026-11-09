@@ -10,37 +10,9 @@ from PIL import Image
 
 from wan_va.modules.utils import load_vae, resolve_model_component
 from wan_va.guidance.dino_reward import DinoReward
-from wan_va.guidance.latent_guidance import guided_step, isolated_decode_cache
+from wan_va.guidance.latent_guidance import guided_step
+from wan_va.guidance.reference import reconstructed_reference, decoder_on_cpu
 
-
-@torch.no_grad()
-def reconstructed_reference(vae, path, start, stop):
-    """Decode a normalized, single-view HumanGen cache; indices are decoded frames.
-
-    Reuse the server's cache layout handling. Decode only the prefix needed for
-    the requested segment, because the causal VAE needs earlier latent context.
-    """
-    from wan_va.wan_va_server import VA_Server
-
-    item = torch.load(path, map_location="cpu", weights_only=True)
-    if not isinstance(item, dict) or "latent" not in item:
-        raise ValueError("Human cache must be a dictionary containing 'latent'")
-    latent = VA_Server._reshape_icl_latent(None, item["latent"], item)
-    if latent.shape[1] != len(vae.config.latents_mean):
-        raise ValueError("Human latent channels do not match this VAE")
-    temporal_scale = getattr(vae.config, "scale_factor_temporal", 4)
-    available = 1 + temporal_scale * (latent.shape[2] - 1)
-    if stop > available:
-        raise ValueError(f"Reference stop {stop} exceeds {available} decoded frames")
-    prefix = 1 + (stop - 1 + temporal_scale - 1) // temporal_scale
-    parameter = next(vae.parameters())
-    latent = latent[:, :, :prefix].to(parameter)
-    mean = latent.new_tensor(vae.config.latents_mean)[None, :, None, None, None]
-    std = latent.new_tensor(vae.config.latents_std)[None, :, None, None, None]
-    # Human latents contain one view; do not apply the robot's three-camera crop.
-    with isolated_decode_cache(vae):
-        video = vae.decode(latent * std + mean, return_dict=False)[0]
-    return ((video[0, :, start:stop].permute(1, 0, 2, 3).float() + 1) / 2).clamp(0, 1)
 
 
 def check_direction(step, reward_fn, captured_dtype):
@@ -118,9 +90,11 @@ def main():
     reward = DinoReward(vae, args.dino, torch.device('cuda'))
     if args.reference_latent:
         print(f'Using reconstructed human reference: {args.reference_latent}', flush=True)
-        reference = reconstructed_reference(
-            vae, args.reference_latent, args.reference_start, args.reference_stop,
-        )
+        with decoder_on_cpu(vae):
+            reference = reconstructed_reference(
+                vae, args.reference_latent, args.reference_start, args.reference_stop,
+            )
+        torch.cuda.empty_cache()
     else:
         reader = imageio.get_reader(args.reference)
         fps = float(reader.get_meta_data().get('fps', 12))

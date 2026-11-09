@@ -79,3 +79,14 @@ def test_nonfinite_reward_rejected():
     x = torch.ones(1, 1, 2, 1, 1)
     with pytest.raises(FloatingPointError):
         guided_step(x, x, 0.5, x, lambda z: z.sum() * float('nan'), 1)
+
+
+def test_fp32_state_preserves_small_correction_lost_in_bf16():
+    x = torch.ones(1, 1, 2, 1, 1)
+    result, stats = guided_step(x, torch.zeros_like(x), .5, x,
+                                lambda clean: clean.sum(), .001,
+                                fixed_first_frame=True, max_norm=0)
+    assert result.dtype == torch.float32
+    assert stats['applied_correction_norm'] > .0009
+    assert stats['changed_fraction'] == 1
+    assert (x.bfloat16() + .001).float().equal(x)

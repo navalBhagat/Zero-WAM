@@ -153,7 +153,10 @@ def test_external_guidance_precedes_final_video_cache(monkeypatch):
     server.job_config.external_max_norm = 1.0
     server.scheduler.sigmas = torch.tensor([0.5])
     server.external_reward = lambda clean: clean.sum()
+    server.external_reference_kind = "test"
     monkeypatch.setattr(torch.cuda, 'synchronize', lambda *_: None)
+    monkeypatch.setattr(torch.cuda, 'reset_peak_memory_stats', lambda *_: None)
+    monkeypatch.setattr(torch.cuda, 'memory_allocated', lambda *_: 0)
     monkeypatch.setattr(torch.cuda, 'max_memory_allocated', lambda *_: 0)
     monkeypatch.setattr(torch.cuda, 'max_memory_reserved', lambda *_: 0)
     monkeypatch.delenv('GUIDANCE_CAPTURE', raising=False)
@@ -164,3 +167,24 @@ def test_external_guidance_precedes_final_video_cache(monkeypatch):
     torch.testing.assert_close(cached, server.last_predicted_latents)
     assert torch.count_nonzero(cached[:, :, :1]) == 0
     assert server.action_scheduler.step_calls == 1
+
+
+def test_guided_sampling_keeps_fp32_state_and_bf16_model_input(monkeypatch):
+    server = _mock_server()
+    server.dtype = torch.bfloat16
+    server.job_config.external_strength = 0.01
+    server.job_config.external_every = 1
+    server.job_config.external_max_norm = 1.0
+    server.scheduler.sigmas = torch.tensor([0.5])
+    server.external_reference_kind = "test"
+    server.external_reward = lambda clean: clean.float().sum()
+    for name in ("synchronize", "reset_peak_memory_stats"):
+        monkeypatch.setattr(torch.cuda, name, lambda *_: None)
+    for name in ("max_memory_allocated", "max_memory_reserved", "memory_allocated"):
+        monkeypatch.setattr(torch.cuda, name, lambda *_: 0)
+    monkeypatch.delenv("GUIDANCE_CAPTURE", raising=False)
+    server._infer_icl({"obs": []})
+    assert server.last_predicted_latents.dtype == torch.float32
+    video = [c for c in server.transformer.calls if c[0] == "forward_latent_only"]
+    assert all(c[2]["latent_res_lst"]["noisy_latents"].dtype == torch.bfloat16 for c in video)
+    assert [c[1] for c in video] == [0, 1]
