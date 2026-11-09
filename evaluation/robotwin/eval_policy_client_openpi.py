@@ -837,7 +837,6 @@ def parse_args_and_config():
 if __name__ == "__main__":
     if os.environ.get("ZERO_WAM_DIAGNOSTICS") == "1":
         faulthandler.enable()
-        faulthandler.dump_traceback_later(180, repeat=True)
     Sapien_TEST()
     usr_args = parse_args_and_config()
     main(usr_args)
