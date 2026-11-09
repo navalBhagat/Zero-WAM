@@ -383,8 +383,11 @@ def main(usr_args):
     icl_seed = int(
         usr_args.get("seed", 0) if icl_seed_value is None else icl_seed_value
     )
-    icl_video_mapping = load_icl_human_video_map(
-        usr_args["icl_human_video_map"]
+    use_icl = bool(usr_args.get("use_icl", 1))
+    needs_reference = use_icl or usr_args.get("external_guidance_strength", 0) != 0
+    icl_video_mapping = (
+        load_icl_human_video_map(usr_args["icl_human_video_map"])
+        if needs_reference else None
     )
     icl_latent_root = usr_args["icl_latent_root"]
     episode_offset = int(usr_args.get("episode_offset") or 0)
@@ -400,6 +403,8 @@ def main(usr_args):
     args["task_config"] = task_config
     args["ckpt_setting"] = ckpt_setting
     args["save_root"] = save_root
+    args["use_icl"] = use_icl
+    args["needs_reference"] = needs_reference
     args["icl_seed"] = icl_seed
     args["icl_video_mapping"] = icl_video_mapping
     args["icl_latent_root"] = icl_latent_root
@@ -629,15 +634,15 @@ def eval_policy(task_name,
         succ = False
 
         prompt = TASK_ENV.get_instruction()
-        icl_video_path = select_icl_video(
-            args["icl_video_mapping"],
-            task_name,
-            args["icl_seed"],
-            now_id,
-        )
-        icl_latent_path = resolve_icl_latent_path(
-            icl_video_path, args["icl_latent_root"]
-        )
+        icl_video_path, icl_latent_path = "", ""
+        if args["needs_reference"]:
+            icl_video_path = select_icl_video(
+                args["icl_video_mapping"], task_name, args["icl_seed"], now_id,
+            )
+            if args["use_icl"]:
+                icl_latent_path = resolve_icl_latent_path(
+                    icl_video_path, args["icl_latent_root"]
+                )
         print(
             f"[ICL] task={task_name} episode={now_id} "
             f"video={icl_video_path} latent={icl_latent_path or 'MP4_FALLBACK'}",
@@ -648,7 +653,7 @@ def eval_policy(task_name,
                 reset=True,
                 prompt=prompt,
                 save_visualization=save_visualization,
-                use_icl=True,
+                use_icl=args["use_icl"],
                 icl_video_path=icl_video_path,
                 icl_latent_path=icl_latent_path,
                 video_guidance_scale=video_guidance_scale,
@@ -787,7 +792,11 @@ def parse_args_and_config():
         type=str,
         default="evaluation/robotwin/robotwin_icl_human_videos.py",
     )
-    parser.add_argument("--icl_latent_root", type=str, required=True)
+    parser.add_argument("--use_icl", type=int, choices=[0, 1], default=1,
+                        help="Cache the human demonstration in the transformer (default: 1)")
+    parser.add_argument("--external_guidance_strength", type=float, default=0,
+                        help="Match the server setting: nonzero keeps the human reward reference when ICL is off")
+    parser.add_argument("--icl_latent_root", type=str, default="")
     parser.add_argument("--icl_seed", type=int, default=None)
     parser.add_argument("--start_seed", type=int, default=None)
     parser.add_argument("--episode_offset", type=int, default=0)

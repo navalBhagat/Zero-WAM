@@ -605,6 +605,25 @@ class VA_Server:
     ):
         if not prompt:
             raise ValueError("Robotwin ICL inference requires a prompt")
+        # Load only when enabled; reuse weights but replace reference each episode.
+        if getattr(self.job_config, "external_strength", 0) != 0:
+            from .guidance.dino_reward import DinoReward
+
+            if self.job_config.external_strength < 0 or self.job_config.external_every < 1:
+                raise ValueError("Use nonnegative external strength and positive interval")
+            if self.env_type == "robotwin_tshape":
+                raise ValueError("External guidance requires width-concatenated cameras")
+            if not icl_video_path:
+                raise ValueError("Guidance requires the human MP4 even with cached ICL latents")
+            if not hasattr(self, "external_reward"):
+                self.external_reward = DinoReward(
+                    self.vae, self.job_config.dino_checkpoint, self.device,
+                    len(self.job_config.obs_cam_keys),
+                )
+            frames = self._read_icl_video(icl_video_path)[0].permute(1, 0, 2, 3) / 255.0
+            self.external_reward.set_reference(
+                frames[self.job_config.reference_start:self.job_config.reference_stop]
+            )
         self.chunk_idx = 0
         self.init_latent = None
         self.last_predicted_latents = None
@@ -835,9 +854,45 @@ class VA_Server:
                     self.latent_height,
                     self.latent_width,
                 )
-                latents = self.scheduler.step(
+                base_next = self.scheduler.step(
                     noise, timestep, latents, return_dict=False
                 )
+                # Capture one actual prediction for a simulator-free backward replay.
+                capture = os.environ.get("GUIDANCE_CAPTURE")
+                if capture and not getattr(self, "guidance_captured", False):
+                    torch.save(dict(sample=latents.detach().cpu(), velocity=noise.detach().cpu(),
+                                    sigma=self.scheduler.sigmas[step].cpu(),
+                                    base_next=base_next.detach().cpu(),
+                                    fixed_first_frame=self.chunk_idx == 0,
+                                    observed=self.init_latent[:, :, :1].detach().cpu()
+                                    if self.chunk_idx == 0 else None), capture)
+                    self.guidance_captured = True
+                strength = getattr(self.job_config, "external_strength", 0)
+                if strength and step % self.job_config.external_every == 0:
+                    from .guidance.latent_guidance import guided_step
+
+                    # Final cache-only pass sees the corrected video. No WAM backward.
+                    started = time.perf_counter()
+                    def reward_fn(clean):
+                        if self.chunk_idx == 0:
+                            clean = clean.clone()
+                            clean[:, :, :1] = self.init_latent[:, :, :1]
+                        return self.external_reward(clean)
+
+                    latents, stats = guided_step(
+                        latents, noise, self.scheduler.sigmas[step], base_next,
+                        reward_fn, strength,
+                        fixed_first_frame=self.chunk_idx == 0,
+                        max_norm=self.job_config.external_max_norm,
+                    )
+                    torch.cuda.synchronize(self.device)
+                    stats.update(chunk=self.chunk_idx, step=step,
+                                 seconds=time.perf_counter() - started,
+                                 peak_allocated=torch.cuda.max_memory_allocated(self.device),
+                                 peak_reserved=torch.cuda.max_memory_reserved(self.device))
+                    logger.info("[external-guidance] %s", stats)
+                else:
+                    latents = base_next
                 if self.chunk_idx == 0:
                     latents[:, :, :1] = self.init_latent[:, :, :1]
 
@@ -1178,6 +1233,12 @@ class VA_Server:
                         "icl_guidance_scale", self.job_config.icl_guidance_scale
                     ),
                 )
+                # Seed after loading reference/encoder so their initialization
+                # cannot change paired guided/unguided sampling noise.
+                sampling_seed = os.environ.get("SAMPLING_SEED")
+                if sampling_seed is not None:
+                    torch.manual_seed(int(sampling_seed))
+                    torch.cuda.manual_seed_all(int(sampling_seed))
                 return dict()
             if compute_kv_cache:
                 self._compute_icl_kv_cache(obs)

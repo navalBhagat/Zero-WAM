@@ -144,3 +144,23 @@ def test_icl_cfg_does_not_duplicate_observed_action_branch():
     assert video_call[2]["latent_res_lst"]["noisy_latents"].shape[2] == 4
     assert action_call[2]["action_res_lst"]["noisy_latents"].shape[2] == 2
     assert torch.all(action_call[2]["current_seq_ids"] == 0)
+
+
+def test_external_guidance_precedes_final_video_cache(monkeypatch):
+    server = _mock_server()
+    server.job_config.external_strength = 0.1
+    server.job_config.external_every = 1
+    server.job_config.external_max_norm = 1.0
+    server.scheduler.sigmas = torch.tensor([0.5])
+    server.external_reward = lambda clean: clean.sum()
+    monkeypatch.setattr(torch.cuda, 'synchronize', lambda *_: None)
+    monkeypatch.setattr(torch.cuda, 'max_memory_allocated', lambda *_: 0)
+    monkeypatch.setattr(torch.cuda, 'max_memory_reserved', lambda *_: 0)
+    monkeypatch.delenv('GUIDANCE_CAPTURE', raising=False)
+    server._infer_icl({'obs': []})
+    calls = [c for c in server.transformer.calls if c[0] == 'forward_latent_only']
+    assert [c[1] for c in calls] == [0, 1]
+    cached = calls[-1][2]['latent_res_lst']['noisy_latents']
+    torch.testing.assert_close(cached, server.last_predicted_latents)
+    assert torch.count_nonzero(cached[:, :, :1]) == 0
+    assert server.action_scheduler.step_calls == 1
