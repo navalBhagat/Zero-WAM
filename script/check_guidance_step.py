@@ -43,6 +43,40 @@ def reconstructed_reference(vae, path, start, stop):
     return ((video[0, :, start:stop].permute(1, 0, 2, 3).float() + 1) / 2).clamp(0, 1)
 
 
+def check_direction(step, reward_fn, captured_dtype):
+    """Test the raw ascent direction, separately from Euler-update rounding."""
+    with torch.enable_grad():
+        x = step['sample'].detach().float().requires_grad_(True)
+        clean = x - step['sigma'].float() * step['velocity'].detach().float()
+        score = reward_fn(clean)
+        grad, = torch.autograd.grad(score, x)
+    if step['fixed_first_frame']:
+        grad = grad.clone()
+        grad[:, :, :1] = 0
+    clean, grad = clean.detach(), grad.detach()
+    baseline = score.item()
+    norm_squared = grad.square().sum().item()
+    trials = []
+    with torch.no_grad():
+        for alpha in (0.001, 0.01, 0.1, 1.0):
+            delta = alpha * grad
+            plus = reward_fn(clean + delta).item()
+            minus = reward_fn(clean - delta).item()
+            base = step['base_next'].to(captured_dtype)
+            applied = (base + delta.to(captured_dtype)).float() - base.float()
+            editable = grad != 0
+            trials.append(dict(
+                strength=alpha, reward_plus=plus, reward_minus=minus,
+                central_slope=(plus - minus) / (2 * alpha),
+                expected_slope=norm_squared,
+                captured_applied_norm=applied.norm().item(),
+                captured_changed_fraction=(applied[editable] != 0).float().mean().item()
+                if editable.any() else 0.0,
+            ))
+    return dict(reward=baseline, gradient_norm=norm_squared ** 0.5,
+                captured_dtype=str(captured_dtype), trials=trials)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--capture', required=True)
@@ -55,6 +89,8 @@ def main():
     parser.add_argument('--reference-stop', type=int, default=1)
     parser.add_argument('--strength', type=float, default=0.01)
     parser.add_argument('--output', required=True)
+    parser.add_argument('--dtype', choices=['float32', 'captured'], default='float32',
+                        help='Full precision diagnostic by default; does not change server inference')
     args = parser.parse_args()
     if args.strength <= 0:
         parser.error('strength must be positive')
@@ -66,7 +102,17 @@ def main():
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
     step = torch.load(args.capture, map_location='cuda', weights_only=True)
+    captured_dtype = step['sample'].dtype
     observed = step.pop('observed', None)
+    dtype = torch.float32 if args.dtype == 'float32' else captured_dtype
+    for key, value in step.items():
+        if torch.is_tensor(value) and value.is_floating_point():
+            step[key] = value.to(dtype)
+    if observed is not None:
+        observed = observed.to(dtype)
+    # Avoid TF32 approximation while checking small directional changes.
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cudnn.allow_tf32 = False
     vae = load_vae(resolve_model_component(args.model, 'vae'),
                    torch_dtype=step['sample'].dtype, torch_device='cuda')
     reward = DinoReward(vae, args.dino, torch.device('cuda'))
@@ -96,6 +142,12 @@ def main():
             clean[:, :, :1] = observed
         return reward(clean)
 
+    direction_check = None
+    if args.dtype == 'float32':
+        direction_check = check_direction(step, reward_fn, captured_dtype)
+        (output / 'direction_check.json').write_text(json.dumps(direction_check, indent=2))
+        print('Float32 direction check:', json.dumps(direction_check, indent=2), flush=True)
+
     reports = []
     # Repetition helps expose retained graphs or cache growth.
     for repeat in range(3):
@@ -109,7 +161,8 @@ def main():
                 clean[:, :, :1] = observed
             direction = corrected - step['base_next']
             # Hold velocity fixed: this tests the implemented approximation.
-            stats['perturbed_reward'] = reward(clean + direction).item()
+            stats['perturbed_reward'] = reward_fn(clean + direction).item()
+            stats['applied_correction_norm'] = direction.float().norm().item()
             for label, latent in [('before', clean), ('after', clean + direction)]:
                 frame = reward.decode(latent)[0, :, -1].float().cpu()
                 rgb = ((frame + 1) * 127.5).clamp(0, 255).byte().permute(1, 2, 0).numpy()
@@ -124,7 +177,7 @@ def main():
         assert all(p.grad is None for p in vae.parameters())
         assert all(p.grad is None for p in reward.encoder.parameters())
     (output / 'diagnostics.json').write_text(json.dumps(
-        dict(arguments=vars(args), measurements=reports), indent=2))
+        dict(arguments=vars(args), direction_check=direction_check, measurements=reports), indent=2))
     print(json.dumps(reports, indent=2))
 
 
