@@ -26,11 +26,14 @@ python -m evaluation.robotwin.eval_policy_client_openpi \
     --config "${ROBOTWIN_ROOT}/policy/ACT/deploy_policy.yml" \
     --port "${PORT}" \
     --save_root "${save_root}" \
-    --video_guidance_scale "${TARGET_TEXT_CFG:--1}" \
+    --text_guidance_scale "${TEXT_GUIDANCE_SCALE:-1}" \
     --action_guidance_scale 1 \
     --use_icl "${USE_ICL:-1}" \
-    --external_guidance_strength "${EXTERNAL_STRENGTH:-0}" \
-    --icl_guidance_scale "${ICL_CFG:-5}" \
+    --use_text "${USE_TEXT:-0}" \
+    --use_guidance "${USE_GUIDANCE:-0}" \
+    --profile_timing "${PROFILE_TIMING:-0}" \
+    --profile_sync_gpu "${PROFILE_SYNC_GPU:-0}" \
+    --icl_guidance_scale "${ICL_GUIDANCE_SCALE:-5}" \
     --icl_human_video_map "${ICL_HUMAN_VIDEO_MAP:-${SCRIPT_DIR}/robotwin_icl_human_videos.py}" \
     --icl_latent_root "${ICL_LATENT_ROOT}" \
     --icl_seed "${ICL_SEED:-${seed}}" \

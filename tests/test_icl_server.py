@@ -171,6 +171,7 @@ def test_external_guidance_precedes_final_video_cache(monkeypatch):
 
 def test_guided_sampling_keeps_fp32_state_and_bf16_model_input(monkeypatch):
     server = _mock_server()
+    server.job_config.profile_timing = True
     server.dtype = torch.bfloat16
     server.job_config.external_strength = 0.01
     server.job_config.external_every = 1

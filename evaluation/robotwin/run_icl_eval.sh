@@ -6,8 +6,8 @@ ZERO_WAM_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)
 : "${MODEL_PATH:?Set MODEL_PATH to the released zero-wam-posttrain-robotwin model root}"
 
 START_PORT=${START_PORT:-29556}
-TARGET_TEXT_CFG=${TARGET_TEXT_CFG:--1}
-ICL_CFG=${ICL_CFG:-5}
+TEXT_GUIDANCE_SCALE=${TEXT_GUIDANCE_SCALE:-1}
+ICL_GUIDANCE_SCALE=${ICL_GUIDANCE_SCALE:-5}
 SEED=${SEED:-0}
 TEST_NUM=${TEST_NUM:-100}
 SAVE_ROOT=${SAVE_ROOT:-${ZERO_WAM_ROOT}/results}
@@ -71,8 +71,8 @@ wait_for_servers
 echo "All eight Robotwin servers are ready."
 
 START_PORT="${START_PORT}" \
-TARGET_TEXT_CFG="${TARGET_TEXT_CFG}" \
-ICL_CFG="${ICL_CFG}" \
+TEXT_GUIDANCE_SCALE="${TEXT_GUIDANCE_SCALE}" \
+ICL_GUIDANCE_SCALE="${ICL_GUIDANCE_SCALE}" \
 SEED="${SEED}" \
 TEST_NUM="${TEST_NUM}" \
 bash evaluation/robotwin/launch_client_multigpus.sh "${SAVE_ROOT}" &

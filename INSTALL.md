@@ -167,7 +167,7 @@ Client shell, after the server reports ready:
 ```bash
 conda activate robotwin
 export ROBOTWIN_ROOT="$HOME/Robotwin"
-TEST_NUM=1 SEED=0 ICL_CFG=5 TARGET_TEXT_CFG=-1 \
+TEST_NUM=1 SEED=0 USE_ICL=1 USE_TEXT=0 USE_GUIDANCE=0 ICL_GUIDANCE_SCALE=5 \
   bash evaluation/robotwin/launch_client.sh "$PWD/results/smoke" place_empty_cup
 ```
 

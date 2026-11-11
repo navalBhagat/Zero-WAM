@@ -17,7 +17,7 @@ Optional arguments:
 python setup/dinov2/download.py --output /path/to/checkpoint --revision COMMIT_HASH
 ```
 
-`DINO_CHECKPOINT` and `DINO_REVISION` also set defaults; command-line arguments
+`GUIDANCE_CHECKPOINT` and `DINO_REVISION` also set defaults; command-line arguments
 take precedence. Setup requires network access. Inference uses the downloaded
-checkpoint locally: set `DINO_CHECKPOINT` to its absolute directory using your
+checkpoint locally: set `GUIDANCE_CHECKPOINT` to its absolute directory using your
 shell or job configuration.

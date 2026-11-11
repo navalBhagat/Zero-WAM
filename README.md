@@ -1,51 +1,73 @@
 # Zero-WAM: External Inference-Time Guidance
 
-Research code for studying external guidance of a frozen Zero-WAM world-action
-model using human demonstrations and RoboTwin evaluation.
+Frozen Zero-WAM with optional human-video ICL, task text, and external DINOv2
+guidance. [Installation](INSTALL.md) · [Upstream project](old_readme.md) ·
+[Implementation notes](implementation/docs/external-guidance.md)
 
-Start with [INSTALL.md](INSTALL.md) for environment setup, downloads, verification,
-and a one-episode evaluation.
+## Explicit conditioning switches
 
-The [original project README](old_readme.md) contains the upstream model overview,
-training instructions, results, acknowledgments, and citation. External guidance
-is under development; native human-video ICL remains the default.
+Each `USE_*` switch is independent. Parameters do not enable a switch.
+Robot observations/history are always present.
 
-## Conditioning and guidance modes
-
-The three switches are independent. Choose a row and pass its settings to the
-Snellius evaluation job; `0.01` is an initial experimental DINO strength.
-
-| Mode | `USE_ICL` | `TARGET_TEXT_CFG` | `EXTERNAL_STRENGTH` |
+| Mode | `USE_ICL` | `USE_TEXT` | `USE_GUIDANCE` |
 |---|---:|---:|---:|
-| Observation/history only | 0 | -1 | 0 |
+| Observation/history only | 0 | 0 | 0 |
+| ICL only (default) | 1 | 0 | 0 |
 | Text only | 0 | 1 | 0 |
-| Human-video ICL (default) | 1 | -1 | 0 |
-| Text + ICL | 1 | 1 | 0 |
-| DINO guidance only | 0 | -1 | 0.01 |
-| Text + DINO guidance | 0 | 1 | 0.01 |
-| ICL + DINO guidance | 1 | -1 | 0.01 |
-| Text + ICL + DINO guidance | 1 | 1 | 0.01 |
+| DINO guidance only | 0 | 0 | 1 |
+| ICL + text | 1 | 1 | 0 |
+| ICL + guidance | 1 | 0 | 1 |
+| Text + guidance | 0 | 1 | 1 |
+| All three | 1 | 1 | 1 |
 
-For example, run text plus DINO guidance without native ICL:
+- `USE_ICL=1`: cache the human video/latents in the transformer.
+- `USE_TEXT=1`: use the current episode instruction in prediction and ICL context.
+  When off, both receive empty text embeddings. Cached `.pth` captions are always
+  ignored, so ICL cannot silently introduce task text.
+- `USE_GUIDANCE=1`: apply DINO reward gradients. With ICL off, a human reference
+  still supplies the reward but is not put in the transformer context cache.
 
-```bash
-USE_ICL=0 TARGET_TEXT_CFG=1 EXTERNAL_STRENGTH=0.01 \
-  sbatch --export=ALL implementation/eval_one_task.sbatch
+**Behavior change:** old ICL runs could include cached caption embeddings even with
+`TARGET_TEXT_CFG=-1`. They are not a pure-ICL baseline for the new implementation.
+Legacy environment names (`ICL_CFG`, `TARGET_TEXT_CFG`, `EXTERNAL_*`,
+`DINO_CHECKPOINT`, `REFERENCE_START/STOP`) no longer control these runs; use below.
+
+| Parameters | Defaults / meaning |
+|---|---|
+| `ICL_GUIDANCE_SCALE` | `5`; native ICL CFG strength |
+| `TEXT_GUIDANCE_SCALE` | `1`; task text without text CFG. Above 1 enables text CFG |
+| `GUIDANCE_STRENGTH`, `GUIDANCE_EVERY`, `GUIDANCE_MAX_NORM` | `0.01`, `10`, `1`; correction strength, interval, gradient-norm cap |
+| `GUIDANCE_CHECKPOINT` | Local DINO directory; Slurm helper defaults to `checkpoints/dinov2-small` |
+| `GUIDANCE_REFERENCE_SOURCE` | `auto`, `video`, or `latent`; auto prefers an existing MP4 |
+| `GUIDANCE_REFERENCE_START/STOP` | `0/1`; selected RGB frame range, exclusive stop. Choose a task-relevant segment |
+| `GUIDANCE_DECODER_DTYPE` | `float32`; sampling state is also float32 with guidance |
+
+ICL and text can be combined, but their separate CFG scales cannot both exceed 1
+in the current two-branch sampler; unsupported settings raise an error. Model
+weights stay BF16. No model weights are trained.
+
+## Saved run outputs
+
+```text
+config.json                       # run settings, code revisions, episode metadata
+client.log / server.log            # execution and model diagnostics
+gpu.csv                           # optional whole-GPU memory/utilization samples
+stseed-*/metrics/TASK/res.json     # aggregate success counts
+stseed-*/metrics/TASK/profile_episode_N.json
+stseed-*/visualization/TASK/*.mp4
 ```
 
-Use the same settings with `bash evaluation/robotwin/launch_client.sh` when
-launching manually; configure the server with the same `EXTERNAL_STRENGTH`.
-All modes still condition on robot observations/history. `USE_ICL=0` removes the
-human transformer context; `ICL_CFG=0` alone does not. `TARGET_TEXT_CFG=1` uses
-text without text CFG; values above 1 enable text CFG only when ICL CFG is
-inactive. Native ICL CFG defaults to `ICL_CFG=5`.
+`config.json` keeps the launch settings and adds an `episodes` list. Each episode
+records its actual simulator/demo seed, task instruction, model text confirmed by
+the server, selected human paths, effective switches/scales, reference type/frame
+range, sampling steps/precision, completion status, and video/profile paths.
+`model_text=""` means no task text was supplied; `task_instruction` is still saved
+as the task description. `metadata_verified=false` means an older server did not
+confirm effective settings—do not infer them from the requested flags alone.
+An unfinished episode remains `initializing` or `running` if interrupted.
 
-DINO rows require a local checkpoint (`python setup/dinov2/download.py`, then set
-`DINO_CHECKPOINT`) and a human MP4 reward reference even when native ICL is off.
-Select `REFERENCE_START`/`REFERENCE_STOP` (exclusive stop, at 12 FPS); their
-defaults select the first human frame, not a task-completion target. Guidance runs
-every `EXTERNAL_EVERY=10` denoising steps with `EXTERNAL_MAX_NORM=1` by default.
-These modes are selectable; GPU feasibility and task performance still need
-validation. See [the implementation guide](implementation/docs/external-guidance.md)
-for staged Snellius checks. `implementation/` is currently Git-ignored, so its
-job scripts must also be copied to the cluster checkout.
+`MONITOR_GPU=1` (default) writes gpu.csv every two seconds. Set `MONITOR_GPU=0` to
+skip it. Timing profiles do not replace whole-device GPU measurements. Revision
+information is now under `config.json.code`; new evaluation runs do not create
+revision.txt or an empty generated/ directory. Existing results are not modified.
+These structured JSON records can later feed W&B; W&B logging is not enabled yet.

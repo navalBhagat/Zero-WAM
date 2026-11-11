@@ -11,8 +11,8 @@ SAVE_ROOT=${1:-${ZERO_WAM_ROOT}/results}
 SEED=${SEED:-0}
 TEST_NUM=${TEST_NUM:-100}
 START_PORT=${START_PORT:-29556}
-TARGET_TEXT_CFG=${TARGET_TEXT_CFG:--1}
-ICL_CFG=${ICL_CFG:-5}
+TEXT_GUIDANCE_SCALE=${TEXT_GUIDANCE_SCALE:-1}
+ICL_GUIDANCE_SCALE=${ICL_GUIDANCE_SCALE:-5}
 ICL_SEED=${ICL_SEED:-${SEED}}
 ICL_HUMAN_VIDEO_MAP=${ICL_HUMAN_VIDEO_MAP:-${SCRIPT_DIR}/robotwin_icl_human_videos.py}
 ICL_LATENT_ROOT=${ICL_LATENT_ROOT:-${ZERO_WAM_ROOT}/data/HumanGen/human_latents/robotwin}
@@ -69,9 +69,14 @@ for i in "${!TASKS[@]}"; do
     --config "${ROBOTWIN_ROOT}/policy/ACT/deploy_policy.yml" \
     --port "${port}" \
     --save_root "${task_save_root}" \
-    --video_guidance_scale "${TARGET_TEXT_CFG}" \
+    --text_guidance_scale "${TEXT_GUIDANCE_SCALE}" \
     --action_guidance_scale 1 \
-    --icl_guidance_scale "${ICL_CFG}" \
+    --use_icl "${USE_ICL:-1}" \
+    --use_text "${USE_TEXT:-0}" \
+    --use_guidance "${USE_GUIDANCE:-0}" \
+    --profile_timing "${PROFILE_TIMING:-0}" \
+    --profile_sync_gpu "${PROFILE_SYNC_GPU:-0}" \
+    --icl_guidance_scale "${ICL_GUIDANCE_SCALE}" \
     --icl_human_video_map "${ICL_HUMAN_VIDEO_MAP}" \
     --icl_latent_root "${ICL_LATENT_ROOT}" \
     --icl_seed "${ICL_SEED}" \

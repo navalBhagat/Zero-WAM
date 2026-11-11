@@ -11,8 +11,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--output", type=Path,
-        default=Path(os.environ.get("DINO_CHECKPOINT", root / "checkpoints/dinov2-small")),
-        help="Local checkpoint directory (default: DINO_CHECKPOINT or repository checkpoints/dinov2-small)",
+        default=Path(os.environ.get("GUIDANCE_CHECKPOINT", root / "checkpoints/dinov2-small")),
+        help="Local checkpoint directory (default: GUIDANCE_CHECKPOINT or repository checkpoints/dinov2-small)",
     )
     parser.add_argument("--revision", default=os.environ.get("DINO_REVISION", "main"),
                         help="Hugging Face revision; use a commit hash for reproducibility")
@@ -41,7 +41,7 @@ def main():
     )
     print(f"Verified local DINOv2 checkpoint: {destination}")
     print(f"Revision: {revision}")
-    print("Set DINO_CHECKPOINT to the checkpoint directory when running guidance.")
+    print("Set GUIDANCE_CHECKPOINT to the checkpoint directory when running guidance.")
 
 
 if __name__ == "__main__":

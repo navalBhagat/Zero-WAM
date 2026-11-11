@@ -525,13 +525,14 @@ class VA_Server:
         return latent, None
 
     def _cache_icl_context(self, video_path, latent_path):
-        latent, text_emb = self._load_or_encode_icl(video_path, latent_path)
+        latent, _ = self._load_or_encode_icl(video_path, latent_path)
         expected_channels = len(self.vae.config.latents_mean)
         if latent.shape[1] != expected_channels:
             raise ValueError(
                 f"ICL latent has {latent.shape[1]} channels; expected {expected_channels}"
             )
-        text_emb = self.prompt_embeds if text_emb is None else text_emb.to(self.device)
+        # Never inject the .pth's cached caption behind USE_TEXT's back.
+        text_emb = self.target_prompt_embeds
         latent = latent.to(device=self.device, dtype=self.dtype)
         patch_size = self.transformer.patch_size
         grid_id = get_mesh_id(
@@ -584,14 +585,21 @@ class VA_Server:
         icl_latent_path,
         video_guidance_scale,
         icl_guidance_scale,
+        use_text=None,
+        use_guidance=None,
     ):
-        if not prompt:
+        from .conditioning import flag
+        self.use_text = flag(getattr(self.job_config, "use_text", False) if use_text is None else use_text, "use_text")
+        self.use_guidance = flag(getattr(self.job_config, "use_guidance", False) if use_guidance is None else use_guidance, "use_guidance")
+        self.external_strength = (getattr(self.job_config, "guidance_strength", 0.01)
+                                  if self.use_guidance else 0.0)
+        if self.use_text and not prompt:
             raise ValueError("Robotwin ICL inference requires a prompt")
         # Load only when enabled; reuse weights but replace reference each episode.
-        if getattr(self.job_config, "external_strength", 0) != 0:
+        if self.use_guidance:
             from .guidance.dino_reward import DinoReward
 
-            if self.job_config.external_strength < 0 or self.job_config.external_every < 1:
+            if self.external_strength <= 0 or self.job_config.external_every < 1:
                 raise ValueError("Use nonnegative external strength and positive interval")
             if self.env_type == "robotwin_tshape":
                 raise ValueError("External guidance requires width-concatenated cameras")
@@ -602,14 +610,14 @@ class VA_Server:
             source = getattr(self.job_config, "external_reference_source", "auto")
             start, stop = self.job_config.reference_start, self.job_config.reference_stop
             if source not in ("auto", "video", "latent"):
-                raise ValueError("EXTERNAL_REFERENCE_SOURCE must be auto, video, or latent")
+                raise ValueError("GUIDANCE_REFERENCE_SOURCE must be auto, video, or latent")
             use_latent = source == "latent" or (
                 source == "auto" and not os.path.isfile(icl_video_path or "")
             )
             if not hasattr(self, "external_reward"):
                 decoder_dtype = getattr(self.job_config, "external_decoder_dtype", "float32")
                 if decoder_dtype not in ("float32", "bfloat16"):
-                    raise ValueError("EXTERNAL_DECODER_DTYPE must be float32 or bfloat16")
+                    raise ValueError("GUIDANCE_DECODER_DTYPE must be float32 or bfloat16")
                 self.external_reward = DinoReward(
                     self.vae, self.job_config.dino_checkpoint, self.device,
                     len(self.job_config.obs_cam_keys),
@@ -665,28 +673,34 @@ class VA_Server:
         ).reshape(-1, 1, 1)
         self.action_norm_method = self.job_config.action_norm_method
 
-        self.prompt_embeds, self.negative_prompt_embeds = self.encode_prompt(
-            prompt=prompt,
-            negative_prompt="",
-            do_classifier_free_guidance=True,
-            max_sequence_length=512,
-            device=self.device,
-            dtype=self.dtype,
-        )
-        if self.empty_text_emb is not None:
+        if not self.use_text and self.empty_text_emb is not None:
+            self.prompt_embeds = self.empty_text_emb.clone()
             self.negative_prompt_embeds = self.empty_text_emb.clone()
-        self.use_icl = bool(use_icl)
-        self.video_guidance_scale = float(video_guidance_scale)
+        else:
+            self.prompt_embeds, self.negative_prompt_embeds = self.encode_prompt(
+                prompt=prompt if self.use_text else "", negative_prompt="",
+                do_classifier_free_guidance=True, max_sequence_length=512,
+                device=self.device, dtype=self.dtype,
+            )
+            if self.empty_text_emb is not None:
+                self.negative_prompt_embeds = self.empty_text_emb.clone()
+        self.use_icl = flag(use_icl, "use_icl")
+        self.video_guidance_scale = float(video_guidance_scale) if self.use_text else 1.0
+        if self.use_text and self.video_guidance_scale < 1:
+            raise ValueError("TEXT_GUIDANCE_SCALE must be >= 1 when USE_TEXT=1")
         self.icl_guidance_scale = float(icl_guidance_scale)
         self.use_icl_cfg = self.use_icl and self.icl_guidance_scale > 1.0
+        if self.use_icl_cfg and self.use_text and self.video_guidance_scale > 1:
+            raise ValueError("Set ICL_GUIDANCE_SCALE=1 or TEXT_GUIDANCE_SCALE=1; independent double CFG is unsupported")
         self.target_text_cfg_active = (
             not self.use_icl_cfg and self.video_guidance_scale > 1.0
         )
-        self.target_prompt_embeds = (
-            self.negative_prompt_embeds
-            if self.video_guidance_scale < 0
-            else self.prompt_embeds
+        from .conditioning import select_text
+        self.target_prompt_embeds = select_text(
+            self.use_text, self.prompt_embeds, self.negative_prompt_embeds,
         )
+        logger.info("[conditioning] use_icl=%s use_text=%s use_guidance=%s; cached caption ignored",
+                    self.use_icl, self.use_text, self.use_guidance)
         if self.use_icl:
             self._cache_icl_context(icl_video_path, icl_latent_path)
         self.streaming_vae.clear_cache()
@@ -790,6 +804,11 @@ class VA_Server:
         return input_dict
 
     def _infer_icl(self, obs):
+        profile = getattr(self.job_config, "profile_timing", False)
+        if profile:
+            torch.cuda.synchronize(self.device)
+        infer_started = time.perf_counter()
+        guidance_seconds = 0.0
         if self.chunk_idx == 0:
             self.init_latent = self._encode_initial_obs(obs)
         latents = torch.randn(
@@ -812,7 +831,7 @@ class VA_Server:
         )
         # Draw noise in the original dtype before promotion to preserve seeded draws.
         # Opt-in permits a precision-matched zero-strength control as well.
-        if getattr(self.job_config, "external_strength", 0) or getattr(
+        if getattr(self, "external_strength", getattr(self.job_config, "external_strength", 0)) or getattr(
             self.job_config, "video_state_fp32", False
         ):
             latents = latents.float()
@@ -834,6 +853,9 @@ class VA_Server:
             ]
         )
 
+        if profile:
+            torch.cuda.synchronize(self.device)
+        video_started = time.perf_counter()
         for step, timestep in enumerate(video_timesteps):
             last_step = step == len(video_timesteps) - 1
             latent_input = latents.clone()
@@ -887,7 +909,7 @@ class VA_Server:
                                     observed=self.init_latent[:, :, :1].detach().cpu()
                                     if self.chunk_idx == 0 else None), capture)
                     self.guidance_captured = True
-                strength = getattr(self.job_config, "external_strength", 0)
+                strength = getattr(self, "external_strength", getattr(self.job_config, "external_strength", 0))
                 if strength and step % self.job_config.external_every == 0:
                     from .guidance.latent_guidance import guided_step
 
@@ -918,12 +940,16 @@ class VA_Server:
                                  state_dtype=str(latents.dtype),
                                  reference=self.external_reference_kind)
                     stats["guidance_extra_peak"] = stats["peak_allocated"] - allocated_before
+                    guidance_seconds += stats["seconds"]
                     logger.info("[external-guidance] %s", stats)
                 else:
                     latents = base_next
                 if self.chunk_idx == 0:
                     latents[:, :, :1] = self.init_latent[:, :, :1]
 
+        if profile:
+            torch.cuda.synchronize(self.device)
+        action_started = time.perf_counter()
         for timestep in self.action_scheduler.timesteps:
             action_input = actions.clone()
             action_input[:, ~self.action_mask] = 0
@@ -951,7 +977,18 @@ class VA_Server:
         self.last_predicted_latents = latents
         self.last_predicted_actions = cached_actions
         logger.info(f"[ICL] cache after infer: {self.transformer.cache_counts()}")
-        return self.postprocess_action(actions)
+        result = self.postprocess_action(actions)
+        if profile:
+            torch.cuda.synchronize(self.device)
+            finished = time.perf_counter()
+            logger.info("[inference-profile] %s", dict(
+                chunk=self.chunk_idx, total_seconds=finished-infer_started,
+                preparation_seconds=video_started-infer_started,
+                video_seconds_including_guidance=action_started-video_started,
+                guidance_seconds=guidance_seconds,
+                action_seconds=finished-action_started,
+            ))
+        return result
 
     def _compute_icl_kv_cache(self, obs):
         # Remove the generated video chunk before replacing it with encoded
@@ -999,6 +1036,8 @@ class VA_Server:
         icl_latent_path="",
         video_guidance_scale=None,
         icl_guidance_scale=None,
+        use_text=None,
+        use_guidance=None,
     ):
         if self.use_icl_model:
             return self._reset_icl(
@@ -1012,6 +1051,7 @@ class VA_Server:
                 self.job_config.icl_guidance_scale
                 if icl_guidance_scale is None
                 else icl_guidance_scale,
+                use_text=use_text, use_guidance=use_guidance,
             )
         logger.info('Reset.')
         self.use_cfg = (self.job_config.guidance_scale > 1) or (self.job_config.action_guidance_scale > 1)
@@ -1241,6 +1281,43 @@ class VA_Server:
         torch.cuda.empty_cache()
         self.frame_st_id += latent_model_input.shape[2]
 
+    def _episode_metadata(self, prompt, request):
+        """Small, effective settings sent back to the client after reset."""
+        def resolved(value):
+            return os.path.realpath(os.path.expanduser(value)) if value else None
+
+        model_text = prompt if self.use_text else ""
+        guidance = None
+        if self.use_guidance:
+            guidance = dict(
+                strength=self.external_strength, every=self.job_config.external_every,
+                max_norm=self.job_config.external_max_norm,
+                checkpoint=resolved(self.job_config.dino_checkpoint),
+                reference_kind=self.external_reference_kind,
+                reference_start=self.job_config.reference_start,
+                reference_stop=self.job_config.reference_stop,
+                decoder_dtype=str(next(self.vae.decoder.parameters()).dtype),
+            )
+        return dict(
+            use_icl=self.use_icl, use_text=self.use_text, use_guidance=self.use_guidance,
+            model_text=model_text,
+            icl_context_text=model_text if self.use_icl else None,
+            cached_caption_used=False,
+            icl_guidance_scale=self.icl_guidance_scale if self.use_icl else None,
+            text_guidance_scale=self.video_guidance_scale if self.use_text else None,
+            reference_paths=dict(video=resolved(request.get("icl_video_path")),
+                                 latent=resolved(request.get("icl_latent_path"))),
+            model_path=resolved(self.job_config.model_path),
+            transformer_dtype=str(self.dtype),
+            video_state_dtype="torch.float32" if self.external_strength or
+                getattr(self.job_config, "video_state_fp32", False) else str(self.dtype),
+            video_inference_steps=self.job_config.num_inference_steps,
+            action_inference_steps=self.job_config.action_num_inference_steps,
+            frame_chunk_size=self.job_config.frame_chunk_size,
+            sampling_seed=int(os.environ["SAMPLING_SEED"]) if os.environ.get("SAMPLING_SEED") else None,
+            guidance=guidance,
+        )
+
     @torch.no_grad()
     def infer(self, obs):
         reset = obs.get('reset', False)
@@ -1251,7 +1328,9 @@ class VA_Server:
             if reset:
                 self._reset(
                     prompt=prompt,
-                    use_icl=bool(obs.get("use_icl", True)),
+                    use_icl=obs.get("use_icl", getattr(self.job_config, "use_icl", True)),
+                    use_text=obs.get("use_text"),
+                    use_guidance=obs.get("use_guidance"),
                     icl_video_path=obs.get("icl_video_path", ""),
                     icl_latent_path=obs.get("icl_latent_path", ""),
                     video_guidance_scale=obs.get(
@@ -1267,7 +1346,7 @@ class VA_Server:
                 if sampling_seed is not None:
                     torch.manual_seed(int(sampling_seed))
                     torch.cuda.manual_seed_all(int(sampling_seed))
-                return dict()
+                return dict(metadata=self._episode_metadata(prompt, obs))
             if compute_kv_cache:
                 self._compute_icl_kv_cache(obs)
                 return dict()

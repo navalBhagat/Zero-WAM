@@ -6,6 +6,7 @@ from pathlib import Path
 from easydict import EasyDict
 
 from .shared_config import va_shared_cfg
+from ..conditioning import read_conditioning
 
 
 def load_robotwin_norm_stat(action_stats_path):
@@ -56,9 +57,12 @@ va_robotwin_cfg.obs_cam_keys = [
     'observation.images.cam_high', 'observation.images.cam_left_wrist',
     'observation.images.cam_right_wrist'
 ]
-va_robotwin_cfg.guidance_scale = float(os.environ.get("TARGET_TEXT_CFG", "-1"))
+_conditioning = read_conditioning(os.environ)
+for _key, _value in _conditioning.items():
+    va_robotwin_cfg[_key] = _value
+# Internal model API retains these names; enable switches remain separate.
+va_robotwin_cfg.guidance_scale = va_robotwin_cfg.text_guidance_scale
 va_robotwin_cfg.action_guidance_scale = 1
-va_robotwin_cfg.icl_guidance_scale = float(os.environ.get("ICL_CFG", "5"))
 va_robotwin_cfg.icl_rope_h = 24
 va_robotwin_cfg.icl_height = 320
 va_robotwin_cfg.icl_width = 480
@@ -91,14 +95,16 @@ va_robotwin_cfg.action_stats_path = str(_action_stats_path)
 va_robotwin_cfg.norm_stat = load_robotwin_norm_stat(_action_stats_path)
 
 # Optional external reward; reference indices use the existing 12 FPS resampling.
-va_robotwin_cfg.external_strength = float(os.environ.get("EXTERNAL_STRENGTH", "0"))
-va_robotwin_cfg.external_every = int(os.environ.get("EXTERNAL_EVERY", "10"))
-va_robotwin_cfg.external_max_norm = float(os.environ.get("EXTERNAL_MAX_NORM", "1"))
-va_robotwin_cfg.dino_checkpoint = os.environ.get("DINO_CHECKPOINT", "")
-va_robotwin_cfg.reference_start = int(os.environ.get("REFERENCE_START", "0"))
-va_robotwin_cfg.reference_stop = int(os.environ.get("REFERENCE_STOP", "1"))
+va_robotwin_cfg.external_strength = va_robotwin_cfg.guidance_strength if va_robotwin_cfg.use_guidance else 0.0
+va_robotwin_cfg.external_every = int(os.environ.get("GUIDANCE_EVERY", "10"))
+va_robotwin_cfg.external_max_norm = float(os.environ.get("GUIDANCE_MAX_NORM", "1"))
+va_robotwin_cfg.dino_checkpoint = os.environ.get("GUIDANCE_CHECKPOINT", "")
+va_robotwin_cfg.reference_start = int(os.environ.get("GUIDANCE_REFERENCE_START", "0"))
+va_robotwin_cfg.reference_stop = int(os.environ.get("GUIDANCE_REFERENCE_STOP", "1"))
 
 # Auto uses the MP4 when present, otherwise reconstructs the cached human latent.
-va_robotwin_cfg.external_reference_source = os.environ.get("EXTERNAL_REFERENCE_SOURCE", "auto")
-va_robotwin_cfg.external_decoder_dtype = os.environ.get("EXTERNAL_DECODER_DTYPE", "float32")
+va_robotwin_cfg.external_reference_source = os.environ.get("GUIDANCE_REFERENCE_SOURCE", "auto")
+va_robotwin_cfg.external_decoder_dtype = os.environ.get("GUIDANCE_DECODER_DTYPE", "float32")
 va_robotwin_cfg.video_state_fp32 = os.environ.get("VIDEO_STATE_FP32", "0") == "1"
+
+va_robotwin_cfg.profile_timing = os.environ.get("PROFILE_TIMING", "0") == "1"

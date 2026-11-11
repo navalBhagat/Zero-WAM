@@ -50,6 +50,8 @@ from pathlib import Path
 
 from evaluation.robotwin.websocket_client_policy import WebsocketClientPolicy
 from evaluation.robotwin.test_render import Sapien_TEST
+from evaluation.robotwin.profiling import EpisodeProfiler
+from evaluation.robotwin.run_metadata import create_run, record_episode
 
 def diagnostic_call(label, function, *args, **kwargs):
     """Optionally bracket a blocking simulator/server call with timestamps."""
@@ -384,7 +386,9 @@ def main(usr_args):
         usr_args.get("seed", 0) if icl_seed_value is None else icl_seed_value
     )
     use_icl = bool(usr_args.get("use_icl", 1))
-    needs_reference = use_icl or usr_args.get("external_guidance_strength", 0) != 0
+    use_text = bool(usr_args.get("use_text", 0))
+    use_guidance = bool(usr_args.get("use_guidance", 0))
+    needs_reference = use_icl or use_guidance
     icl_video_mapping = (
         load_icl_human_video_map(usr_args["icl_human_video_map"])
         if needs_reference else None
@@ -404,6 +408,10 @@ def main(usr_args):
     args["ckpt_setting"] = ckpt_setting
     args["save_root"] = save_root
     args["use_icl"] = use_icl
+    args["use_text"] = use_text
+    args["use_guidance"] = use_guidance
+    args["profile_timing"] = bool(usr_args.get("profile_timing", 0))
+    args["profile_sync_gpu"] = bool(usr_args.get("profile_sync_gpu", 0))
     args["needs_reference"] = needs_reference
     args["icl_seed"] = icl_seed
     args["icl_video_mapping"] = icl_video_mapping
@@ -596,7 +604,13 @@ def eval_policy(task_name,
 
         args["render_freq"] = render_freq
 
-        TASK_ENV.setup_demo(now_ep_num=now_id, seed=now_seed, is_test=True, **args)
+        profile = EpisodeProfiler(
+            Path(args['save_root']) / f'stseed-{st_seed}' / 'metrics' / task_name / f'profile_episode_{now_id}.json',
+            enabled=args["profile_timing"], sync_gpu=args["profile_sync_gpu"],
+        )
+        profile.call("scene_setup", TASK_ENV.setup_demo,
+                     now_ep_num=now_id, seed=now_seed, is_test=True, **args)
+        profile.attach(TASK_ENV, model)
         episode_info_list = [episode_info["info"]]
         results = generate_episode_descriptions(args["task_name"], episode_info_list, test_num)
         instruction = np.random.choice(results[0][instruction_type])
@@ -648,12 +662,28 @@ def eval_policy(task_name,
             f"video={icl_video_path} latent={icl_latent_path or 'MP4_FALLBACK'}",
             flush=True,
         )
+        run_config = Path(args['save_root']) / 'config.json'
+        # Direct client launches also get a run record (Slurm creates it earlier).
+        if not run_config.exists():
+            create_run(run_config, os.environ, Path(__file__).resolve().parents[2])
+        # Persist before server reset: interrupted runs retain the actual task/seed.
+        record_episode(
+            run_config, now_id, status="initializing", task=task_name,
+            simulator_seed=int(now_seed), icl_seed=int(args["icl_seed"]),
+            episode_offset=int(args.get("episode_offset", 0)),
+            task_instruction=str(prompt),
+            requested_conditioning=dict(use_icl=args["use_icl"], use_text=args["use_text"],
+                                        use_guidance=args["use_guidance"]),
+            selected_reference=dict(video=icl_video_path or None, latent=icl_latent_path or None),
+        )
         ret = diagnostic_call("server reset / human-context cache", model.infer,
             dict(
                 reset=True,
                 prompt=prompt,
                 save_visualization=save_visualization,
                 use_icl=args["use_icl"],
+                use_text=args["use_text"],
+                use_guidance=args["use_guidance"],
                 icl_video_path=icl_video_path,
                 icl_latent_path=icl_latent_path,
                 video_guidance_scale=video_guidance_scale,
@@ -661,6 +691,12 @@ def eval_policy(task_name,
             )
         )
         
+        server_metadata = ret.get("metadata")
+        record_episode(
+            run_config, now_id, status="running", metadata_verified=server_metadata is not None,
+            model_text=server_metadata.get("model_text") if server_metadata else None,
+            server=server_metadata,
+        )
         first = True
         full_obs_list = []
         gen_video_list = []
@@ -736,7 +772,7 @@ def eval_policy(task_name,
         vis_dir.mkdir(parents=True, exist_ok=True)
         video_name = f"{now_id}_{prompt.replace(' ', '_')}_{succ}.mp4"
         out_img_file = vis_dir / video_name
-        save_comparison_video(
+        profile.call("video_encoding", save_comparison_video,
             real_obs_list=full_obs_list,
             imagined_video=None, #gen_video_list,
             action_history=full_action_history,
@@ -752,6 +788,14 @@ def eval_policy(task_name,
         else:
             print("\033[91mFail!\033[0m")
 
+        profile.close(success=succ)
+        record_episode(
+            run_config, now_id, status="completed", success=bool(succ),
+            simulator_action_count=int(TASK_ENV.take_action_cnt),
+            policy_action_calls=len(full_action_history), observation_count=len(full_obs_list),
+            video_path=str(out_img_file.resolve()), video_playback_fps=15,
+            profile_path=str(profile.output.resolve()) if profile.enabled else None,
+        )
         now_id += 1
         TASK_ENV.close_env(clear_cache=((succ_seed + 1) % clear_cache_freq == 0))
 
@@ -784,7 +828,8 @@ def parse_args_and_config():
     parser.add_argument("--overrides", nargs=argparse.REMAINDER)
     parser.add_argument("--port", type=int, default=8000, help='remote policy socket port.')
     parser.add_argument("--save_root", type=str, default="results/default_vis_path")
-    parser.add_argument("--video_guidance_scale", type=float, default=-1.0)
+    parser.add_argument("--text_guidance_scale", "--video_guidance_scale",
+                        dest="video_guidance_scale", type=float, default=1.0)
     parser.add_argument("--action_guidance_scale", type=float, default=1.0)
     parser.add_argument("--icl_guidance_scale", type=float, default=5.0)
     parser.add_argument(
@@ -794,8 +839,12 @@ def parse_args_and_config():
     )
     parser.add_argument("--use_icl", type=int, choices=[0, 1], default=1,
                         help="Cache the human demonstration in the transformer (default: 1)")
-    parser.add_argument("--external_guidance_strength", type=float, default=0,
-                        help="Match the server setting: nonzero keeps the human reward reference when ICL is off")
+    parser.add_argument("--use_text", type=int, choices=[0, 1], default=0,
+                        help="Use instruction text in BOTH target and human-context streams")
+    parser.add_argument("--use_guidance", type=int, choices=[0, 1], default=0,
+                        help="Enable DINO latent guidance (parameters configured on server)")
+    parser.add_argument("--profile_timing", type=int, choices=[0, 1], default=0)
+    parser.add_argument("--profile_sync_gpu", type=int, choices=[0, 1], default=0)
     parser.add_argument("--icl_latent_root", type=str, default="")
     parser.add_argument("--icl_seed", type=int, default=None)
     parser.add_argument("--start_seed", type=int, default=None)
