@@ -189,3 +189,39 @@ def test_guided_sampling_keeps_fp32_state_and_bf16_model_input(monkeypatch):
     video = [c for c in server.transformer.calls if c[0] == "forward_latent_only"]
     assert all(c[2]["latent_res_lst"]["noisy_latents"].dtype == torch.bfloat16 for c in video)
     assert [c[1] for c in video] == [0, 1]
+
+
+def test_explicit_reference_is_selected_once_per_robot_chunk(monkeypatch, tmp_path):
+    from wan_va.guidance.selection import FixedFrameSelector
+
+    server = _mock_server()
+    server.job_config.external_strength = .01
+    server.job_config.external_every = 1
+    server.job_config.external_max_norm = 1
+    server.scheduler.sigmas = torch.tensor([.5])
+    server.external_reference_kind = 'test'
+    server.guidance_selector = FixedFrameSelector(4)
+    server.reference_preview_dir = str(tmp_path)
+    selected = []
+    class Reward:
+        selected_frames = None
+        def select_reference(self, indices):
+            self.selected_frames = indices
+            selected.append(indices)
+        def save_reference_frames(self, output):
+            return []
+        def __call__(self, clean):
+            return clean.sum()
+    server.external_reward = Reward()
+    for name in ('synchronize', 'reset_peak_memory_stats'):
+        monkeypatch.setattr(torch.cuda, name, lambda *_: None)
+    for name in ('max_memory_allocated', 'max_memory_reserved', 'memory_allocated'):
+        monkeypatch.setattr(torch.cuda, name, lambda *_: 0)
+    monkeypatch.delenv('GUIDANCE_CAPTURE', raising=False)
+    server._infer_icl(dict(obs=[], guidance_reference_frames=[2]))
+    assert selected == [[2]]  # not repeated during the final cache-only pass
+    assert server.last_guidance_selection['frame_indices'] == [2]
+    server.chunk_idx = 1
+    server._infer_icl(dict(obs=[], guidance_reference_frames=[3]))
+    assert selected == [[2], [3]]
+    assert server.last_guidance_selection['chunk'] == 1

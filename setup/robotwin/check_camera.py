@@ -24,6 +24,9 @@ sys.path.insert(0, str(root))
 os.chdir(root)
 faulthandler.enable()
 faulthandler.dump_traceback_later(options.timeout, exit=True)
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from evaluation.robotwin.rendering import configure_rendering
+configure_rendering()
 from envs import CONFIGS_PATH
 configs = Path(CONFIGS_PATH)
 with open("task_config/demo_clean.yml") as f:

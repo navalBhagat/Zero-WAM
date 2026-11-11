@@ -80,3 +80,10 @@ def test_cpu_reference_restores_decoder_even_on_failure():
             raise RuntimeError('decode failure')
     assert next(vae.decoder.parameters()).dtype == torch.float64
     assert next(vae.post_quant_conv.parameters()).dtype == torch.float64
+
+
+def test_full_reference_sequence_for_future_frame_selection(tmp_path):
+    path = tmp_path / 'human.pth'
+    torch.save(dict(latent=torch.ones(1, 2, 4, 2, 6)), path)
+    frames = reference.reconstructed_reference(VAE(), path)
+    assert frames.shape == (13, 3, 2, 6)

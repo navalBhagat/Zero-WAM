@@ -15,6 +15,7 @@ def read_conditioning(env):
         'ICL_CFG', 'TARGET_TEXT_CFG', 'EXTERNAL_STRENGTH', 'EXTERNAL_EVERY',
         'EXTERNAL_MAX_NORM', 'DINO_CHECKPOINT', 'REFERENCE_START', 'REFERENCE_STOP',
         'EXTERNAL_REFERENCE_SOURCE', 'EXTERNAL_DECODER_DTYPE',
+        'GUIDANCE_REFERENCE_START', 'GUIDANCE_REFERENCE_STOP',
     })
     if legacy:
         warnings.warn('Ignoring legacy settings: ' + ', '.join(legacy) +

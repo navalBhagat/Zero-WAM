@@ -53,13 +53,13 @@ def decoder_on_cpu(vae):
 
 
 @torch.no_grad()
-def reconstructed_reference(vae, path, start, stop):
+def reconstructed_reference(vae, path, start=0, stop=None):
     """Select decoded RGB frames; HumanGen latents are already normalized.
 
     Decode the causal prefix required for the segment. Call decoder_on_cpu around
     this for long references when the WAM and simulator already occupy the GPU.
     """
-    if start < 0 or stop <= start:
+    if start < 0 or (stop is not None and stop <= start):
         raise ValueError("Reference indices must satisfy 0 <= start < stop")
     item = torch.load(path, map_location='cpu', weights_only=True)
     if not isinstance(item, dict) or 'latent' not in item:
@@ -69,6 +69,7 @@ def reconstructed_reference(vae, path, start, stop):
         raise ValueError("Human latent channels do not match this VAE")
     scale = getattr(vae.config, 'scale_factor_temporal', 4)
     available = 1 + scale * (latent.shape[2] - 1)
+    stop = available if stop is None else stop
     if stop > available:
         raise ValueError(f"Reference stop {stop} exceeds {available} decoded frames")
     prefix = 1 + (stop - 1 + scale - 1) // scale

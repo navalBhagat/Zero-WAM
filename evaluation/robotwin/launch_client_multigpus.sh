@@ -74,6 +74,7 @@ for i in "${!TASKS[@]}"; do
     --use_icl "${USE_ICL:-1}" \
     --use_text "${USE_TEXT:-0}" \
     --use_guidance "${USE_GUIDANCE:-0}" \
+    --render_samples_per_pixel "${RENDER_SAMPLES_PER_PIXEL:-32}" \
     --profile_timing "${PROFILE_TIMING:-0}" \
     --profile_sync_gpu "${PROFILE_SYNC_GPU:-0}" \
     --icl_guidance_scale "${ICL_GUIDANCE_SCALE}" \

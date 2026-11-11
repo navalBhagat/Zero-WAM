@@ -12,6 +12,7 @@ from wan_va.modules.utils import load_vae, resolve_model_component
 from wan_va.guidance.dino_reward import DinoReward
 from wan_va.guidance.latent_guidance import guided_step
 from wan_va.guidance.reference import reconstructed_reference, decoder_on_cpu
+from wan_va.guidance.selection import FixedFrameSelector
 
 
 
@@ -57,8 +58,7 @@ def main():
     references = parser.add_mutually_exclusive_group(required=True)
     references.add_argument('--reference', help='Original human MP4')
     references.add_argument('--reference-latent', help='Cached human .pth; use reconstructed frames')
-    parser.add_argument('--reference-start', type=int, default=0)
-    parser.add_argument('--reference-stop', type=int, default=1)
+    parser.add_argument('--reference-frames', default='0', help='Explicit comma-separated human RGB indices (default: 0)')
     parser.add_argument('--strength', type=float, default=0.01)
     parser.add_argument('--output', required=True)
     parser.add_argument('--dtype', choices=['float32', 'captured'], default='float32',
@@ -66,8 +66,6 @@ def main():
     args = parser.parse_args()
     if args.strength <= 0:
         parser.error('strength must be positive')
-    if args.reference_start < 0 or args.reference_stop <= args.reference_start:
-        parser.error('reference indices must satisfy 0 <= start < stop')
     reference_path = args.reference_latent or args.reference
     if not Path(reference_path).is_file():
         parser.error(f'Reference file not found: {reference_path}')
@@ -92,7 +90,7 @@ def main():
         print(f'Using reconstructed human reference: {args.reference_latent}', flush=True)
         with decoder_on_cpu(vae):
             reference = reconstructed_reference(
-                vae, args.reference_latent, args.reference_start, args.reference_stop,
+                vae, args.reference_latent,
             )
         torch.cuda.empty_cache()
     else:
@@ -103,10 +101,12 @@ def main():
         # Match server reference indexing after 12 FPS resampling.
         indices = torch.arange(max(1, int(len(frames) / fps * 12))) * fps / 12
         indices = indices.long().clamp(max=len(frames) - 1).unique()
-        selected = indices[args.reference_start:args.reference_stop]
+        selected = indices
         import numpy as np
         reference = torch.from_numpy(np.stack([frames[i] for i in selected.tolist()]))
         reference = reference.permute(0, 3, 1, 2).float() / 255
+    selected_frames = FixedFrameSelector(len(reference), args.reference_frames).select(0)
+    reference = reference[selected_frames]
     reward.set_reference(reference)
     preview = (reference[0].detach().cpu() * 255).clamp(0, 255).byte()
     Image.fromarray(preview.permute(1, 2, 0).numpy()).save(output / 'reference.png')
@@ -151,7 +151,8 @@ def main():
         assert all(p.grad is None for p in vae.parameters())
         assert all(p.grad is None for p in reward.encoder.parameters())
     (output / 'diagnostics.json').write_text(json.dumps(
-        dict(arguments=vars(args), direction_check=direction_check, measurements=reports), indent=2))
+        dict(arguments=vars(args), selected_reference_frames=selected_frames,
+             direction_check=direction_check, measurements=reports), indent=2))
     print(json.dumps(reports, indent=2))
 
 

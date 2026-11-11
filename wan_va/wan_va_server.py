@@ -596,6 +596,7 @@ class VA_Server:
         if self.use_text and not prompt:
             raise ValueError("Robotwin ICL inference requires a prompt")
         # Load only when enabled; reuse weights but replace reference each episode.
+        self.last_guidance_selection = None
         if self.use_guidance:
             from .guidance.dino_reward import DinoReward
 
@@ -608,7 +609,6 @@ class VA_Server:
             torch.backends.cuda.matmul.allow_tf32 = False
             torch.backends.cudnn.allow_tf32 = False
             source = getattr(self.job_config, "external_reference_source", "auto")
-            start, stop = self.job_config.reference_start, self.job_config.reference_stop
             if source not in ("auto", "video", "latent"):
                 raise ValueError("GUIDANCE_REFERENCE_SOURCE must be auto, video, or latent")
             use_latent = source == "latent" or (
@@ -628,16 +628,23 @@ class VA_Server:
                     raise FileNotFoundError("Guidance needs a human MP4 or cached human .pth")
                 logger.info("[external-guidance] reconstructing human reference on CPU: %s", icl_latent_path)
                 with decoder_on_cpu(self.vae):
-                    frames = reconstructed_reference(self.vae, icl_latent_path, start, stop)
+                    frames = reconstructed_reference(self.vae, icl_latent_path)
             else:
-                if start < 0 or stop <= start:
-                    raise ValueError("Reference indices must satisfy 0 <= start < stop")
                 frames = self._read_icl_video(icl_video_path)[0].permute(1, 0, 2, 3) / 255.0
-                frames = frames[start:stop]
-            self.external_reward.set_reference(frames)
+            from .guidance.selection import FixedFrameSelector
+            self.guidance_selector = FixedFrameSelector(
+                len(frames), getattr(self.job_config, "reference_frames", "0"),
+            )
+            self.external_reward.prepare_references(frames)
+            self.external_reward.select_reference(self.guidance_selector.fixed_frames)
+            self.reference_episode_index = getattr(self, "reference_episode_index", -1) + 1
+            self.reference_preview_dir = os.path.join(
+                self.save_root, "references", f"episode_{self.reference_episode_index:03d}",
+            )
+            self.external_reward.save_reference_frames(self.reference_preview_dir)
             self.external_reference_kind = "reconstructed_latent" if use_latent else "original_video"
-            logger.info("[external-guidance] reference=%s frames=[%s:%s] decoder_dtype=%s",
-                        self.external_reference_kind, start, stop,
+            logger.info("[external-guidance] reference=%s frames=%s decoder_dtype=%s",
+                        self.external_reference_kind, self.guidance_selector.fixed_frames,
                         next(self.vae.decoder.parameters()).dtype)
             del frames
             # Return unused reference allocations before sampling with the WAM resident.
@@ -803,12 +810,29 @@ class VA_Server:
         self._pack_icl_cfg(input_dict, mode, cache_type)
         return input_dict
 
+    def _select_guidance_reference(self, request):
+        """Selection seam: called once per robot chunk, never inside denoising."""
+        explicit = request.get("guidance_reference_frames")
+        indices = self.guidance_selector.select(self.chunk_idx, explicit)
+        self.external_reward.select_reference(indices)
+        selection = dict(chunk=self.chunk_idx, frame_indices=indices,
+                         selection="fixed" if explicit is None else "explicit_request",
+                         preview_paths=self.external_reward.save_reference_frames(self.reference_preview_dir))
+        self.last_guidance_selection = selection
+        logger.info("[guidance-reference] %s", selection)
+        return selection
+
     def _infer_icl(self, obs):
         profile = getattr(self.job_config, "profile_timing", False)
         if profile:
             torch.cuda.synchronize(self.device)
         infer_started = time.perf_counter()
         guidance_seconds = 0.0
+        strength = getattr(self, "external_strength", getattr(self.job_config, "external_strength", 0))
+        if obs.get("guidance_reference_frames") is not None and not strength:
+            raise ValueError("Explicit human frames require USE_GUIDANCE=1")
+        if strength and hasattr(self, "guidance_selector"):
+            self._select_guidance_reference(obs)
         if self.chunk_idx == 0:
             self.init_latent = self._encode_initial_obs(obs)
         latents = torch.randn(
@@ -938,7 +962,8 @@ class VA_Server:
                                  peak_allocated=torch.cuda.max_memory_allocated(self.device),
                                  peak_reserved=torch.cuda.max_memory_reserved(self.device),
                                  state_dtype=str(latents.dtype),
-                                 reference=self.external_reference_kind)
+                                 reference=self.external_reference_kind,
+                                 reference_frames=getattr(self.external_reward, "selected_frames", None))
                     stats["guidance_extra_peak"] = stats["peak_allocated"] - allocated_before
                     guidance_seconds += stats["seconds"]
                     logger.info("[external-guidance] %s", stats)
@@ -1294,9 +1319,11 @@ class VA_Server:
                 max_norm=self.job_config.external_max_norm,
                 checkpoint=resolved(self.job_config.dino_checkpoint),
                 reference_kind=self.external_reference_kind,
-                reference_start=self.job_config.reference_start,
-                reference_stop=self.job_config.reference_stop,
+                selection_mode="explicit_fixed_frames",
                 decoder_dtype=str(next(self.vae.decoder.parameters()).dtype),
+                fixed_reference_frames=getattr(getattr(self, "guidance_selector", None), "fixed_frames", None),
+                reference_frame_count=getattr(getattr(self, "guidance_selector", None), "frame_count", None),
+                reference_preview_dir=getattr(self, "reference_preview_dir", None),
             )
         return dict(
             use_icl=self.use_icl, use_text=self.use_text, use_guidance=self.use_guidance,
@@ -1350,7 +1377,8 @@ class VA_Server:
             if compute_kv_cache:
                 self._compute_icl_kv_cache(obs)
                 return dict()
-            return dict(action=self._infer_icl(obs))
+            action = self._infer_icl(obs)
+            return dict(action=action, guidance_reference=getattr(self, "last_guidance_selection", None))
 
         if reset:
             logger.info(f"******************* Reset server ******************")

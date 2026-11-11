@@ -52,6 +52,7 @@ from evaluation.robotwin.websocket_client_policy import WebsocketClientPolicy
 from evaluation.robotwin.test_render import Sapien_TEST
 from evaluation.robotwin.profiling import EpisodeProfiler
 from evaluation.robotwin.run_metadata import create_run, record_episode
+from evaluation.robotwin.rendering import configure_rendering, render_settings
 
 def diagnostic_call(label, function, *args, **kwargs):
     """Optionally bracket a blocking simulator/server call with timestamps."""
@@ -372,6 +373,8 @@ def resolve_icl_latent_path(video_path, latent_root):
 
 
 def main(usr_args):
+    rendering = configure_rendering(samples=usr_args.get("render_samples_per_pixel"))
+    os.environ["RENDER_SAMPLES_PER_PIXEL"] = str(rendering["samples_per_pixel_effective"])
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     task_name = usr_args["task_name"]
     task_config = usr_args["task_config"]
@@ -671,7 +674,7 @@ def eval_policy(task_name,
             run_config, now_id, status="initializing", task=task_name,
             simulator_seed=int(now_seed), icl_seed=int(args["icl_seed"]),
             episode_offset=int(args.get("episode_offset", 0)),
-            task_instruction=str(prompt),
+            task_instruction=str(prompt), rendering=render_settings(),
             requested_conditioning=dict(use_icl=args["use_icl"], use_text=args["use_text"],
                                         use_guidance=args["use_guidance"]),
             selected_reference=dict(video=icl_video_path or None, latent=icl_latent_path or None),
@@ -702,6 +705,7 @@ def eval_policy(task_name,
         gen_video_list = []
         full_action_history = []
 
+        guidance_selections = []
         initial_obs = diagnostic_call("initial TASK_ENV.get_obs / camera capture", TASK_ENV.get_obs)
         inint_eef_pose = initial_obs['endpose']['left_endpose'] + \
         [initial_obs['endpose']['left_gripper']] + \
@@ -717,6 +721,9 @@ def eval_policy(task_name,
                 first_obs = format_obs(observation, prompt)
 
             ret = diagnostic_call("action-chunk inference", model.infer, dict(obs=first_obs, prompt=prompt, save_visualization=save_visualization, video_guidance_scale=video_guidance_scale, action_guidance_scale=action_guidance_scale))
+            if ret.get('guidance_reference') is not None:
+                guidance_selections.append(ret['guidance_reference'])
+                record_episode(run_config, now_id, guidance_selections=guidance_selections)
             action = ret['action']
             if 'video' in ret:
                 imagined_video = ret['video']
@@ -843,6 +850,8 @@ def parse_args_and_config():
                         help="Use instruction text in BOTH target and human-context streams")
     parser.add_argument("--use_guidance", type=int, choices=[0, 1], default=0,
                         help="Enable DINO latent guidance (parameters configured on server)")
+    parser.add_argument("--render_samples_per_pixel", type=int, default=None,
+                        help="Ray tracing samples per pixel; default RENDER_SAMPLES_PER_PIXEL or 32")
     parser.add_argument("--profile_timing", type=int, choices=[0, 1], default=0)
     parser.add_argument("--profile_sync_gpu", type=int, choices=[0, 1], default=0)
     parser.add_argument("--icl_latent_root", type=str, default="")
@@ -886,6 +895,7 @@ def parse_args_and_config():
 if __name__ == "__main__":
     if os.environ.get("ZERO_WAM_DIAGNOSTICS") == "1":
         faulthandler.enable()
-    Sapien_TEST()
     usr_args = parse_args_and_config()
+    configure_rendering(samples=usr_args.get("render_samples_per_pixel"))
+    Sapien_TEST()
     main(usr_args)

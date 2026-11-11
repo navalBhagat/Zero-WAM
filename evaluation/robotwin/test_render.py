@@ -1,3 +1,5 @@
+from evaluation.robotwin.rendering import configure_rendering
+
 import sys
 import warnings
 import os
@@ -47,7 +49,7 @@ class Sapien_TEST(gym.Env):
         self.engine.set_renderer(self.renderer)
 
         sapien.render.set_camera_shader_dir("rt")
-        sapien.render.set_ray_tracing_samples_per_pixel(32)
+        configure_rendering(sapien.render)
         sapien.render.set_ray_tracing_path_depth(8)
         sapien.render.set_ray_tracing_denoiser("oidn")
 
