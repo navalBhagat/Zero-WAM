@@ -29,12 +29,15 @@ def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('manifest',type=Path)
     p.add_argument('--submit',action='store_true')
+    p.add_argument('--phase-separation',action='store_true')
+    p.add_argument('--client-timeout',type=int,help='Whole-client wall timeout in seconds; includes client setup')
     p.add_argument('--sampling-seed',type=int,default=1234)
     p.add_argument('--task',choices=['place_empty_cup','open_microwave'],default='place_empty_cup')
     p.add_argument('--partition',default='gpu_a100')
     p.add_argument('--account')
     a=p.parse_args(); path=a.manifest.resolve()
     if a.sampling_seed < 0: p.error('Sampling seed must be nonnegative')
+    if a.client_timeout is not None and a.client_timeout <= 0: p.error('Client timeout must be positive')
     label=f'{a.task}_icl_original_caption_only_s{a.sampling_seed}'
     if not path.is_file(): p.error('Existing manifest not found')
     # An advisory lock serializes appenders; job submission is intentionally singular.
@@ -52,11 +55,13 @@ def main():
         for key in ('job_id','command','error'): spec.pop(key,None)
         spec.update(task=a.task,seed=0,repeat=0,label=label,mode='icl_original_caption_only',status='planned')
         env=spec['environment']
-        env.update(TASK=a.task,SEED='0',ICL_SEED='0',VIDEO_STATE_FP32='1',
+        env.update(PHASE_SEPARATION=str(int(a.phase_separation)),PHASE_OFFLOAD_TRANSFORMER='1',
+                   SAVE_ROLLOUT_SNAPSHOTS=str(int(a.phase_separation)),TASK=a.task,SEED='0',ICL_SEED='0',VIDEO_STATE_FP32='1',
                    RENDER_SAMPLES_PER_PIXEL='32',ICL_GUIDANCE_SCALE='5',
                    SAMPLING_SEED=str(a.sampling_seed),ZERO_WAM_ROOT=str(ROOT),TEST_NUM='1',USE_ICL='1',USE_TEXT='1',USE_GUIDANCE='0',
                    TARGET_TEXT_SOURCE='empty',ICL_TEXT_SOURCE='cached',TEXT_GUIDANCE_SCALE='1',
                    EXPERIMENT_LABEL=spec['label'],EXPERIMENT_OUTPUT_ROOT=str(path.parent/'runs'))
+        if a.client_timeout is not None: env['CLIENT_TIMEOUT']=str(a.client_timeout)
         cmd=['sbatch','--parsable','--export=ALL',f'--partition={a.partition}','--time=01:00:00',
              f'--job-name=zw_{a.task}_original','--output='+str(path.parent/'slurm_%j.out'),
              f'--chdir={ROOT}']

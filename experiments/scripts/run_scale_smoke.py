@@ -19,7 +19,7 @@ def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('--manifest',type=Path,default=ROOT/'experiments/stages/00_test_place_object_scale/manifest.json')
     p.add_argument('--submit',action='store_true');p.add_argument('--account')
-    p.add_argument('--sampling-seed',type=int,default=100000)
+    p.add_argument('--sampling-seed',type=int,default=1234)
     a=p.parse_args();path=a.manifest.resolve()
     if a.sampling_seed<0:p.error('Sampling seed must be nonnegative')
     if path.exists() or path.with_suffix('.source.zip').exists():p.error('Choose a fresh --manifest directory')
