@@ -714,6 +714,12 @@ def eval_policy(task_name,
         inint_eef_pose = np.array(inint_eef_pose, dtype=np.float64)
         initial_formatted_obs = format_obs(initial_obs, prompt)
         full_obs_list.append(initial_formatted_obs)
+        from evaluation.robotwin.rollout_snapshots import RolloutSnapshots
+        snapshots = RolloutSnapshots(
+            Path(args['save_root']) / 'snapshots' / f'episode_{now_id:03d}',
+            enabled=os.environ.get("SAVE_ROLLOUT_SNAPSHOTS", "0") == "1")
+        snapshots.write(initial_formatted_obs, -1, TASK_ENV.take_action_cnt, TASK_ENV.eval_success)
+        rollout_chunk = 0
         first_obs = None
         while TASK_ENV.take_action_cnt<TASK_ENV.step_lim:
             if first:
@@ -767,6 +773,9 @@ def eval_policy(task_name,
                         key_frame_list.append(obs)
                     
             first = False
+            if key_frame_list:
+                snapshots.write(key_frame_list[-1], rollout_chunk, TASK_ENV.take_action_cnt, TASK_ENV.eval_success)
+            rollout_chunk += 1
 
             model.infer(dict(obs = key_frame_list, compute_kv_cache=True, imagine=False, save_visualization=save_visualization, state=action))
   

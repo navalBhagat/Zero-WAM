@@ -31,7 +31,7 @@ def snapshot(destination):
     with zipfile.ZipFile(destination, 'w', zipfile.ZIP_DEFLATED) as archive:
         for name in hashes:
             archive.write(ROOT/name, name)
-        for extra in ('experiments/README.md', 'experiments/PHASE_SEPARATION.md', 'experiments/analysis/requirements.txt'):
+        for extra in ('experiments/README.md', 'experiments/PHASE_SEPARATION.md', 'experiments/SCALE_SMOKE.md', 'experiments/analysis/requirements.txt'):
             if (ROOT/extra).is_file(): archive.write(ROOT/extra,extra)
         archive.writestr('source_hashes.json', json.dumps(hashes, indent=2))
     return digest
