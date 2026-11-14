@@ -597,6 +597,7 @@ class VA_Server:
             raise ValueError("Robotwin ICL inference requires a prompt")
         # Load only when enabled; reuse weights but replace reference each episode.
         self.last_guidance_selection = None
+        self.latest_guidance_observation = None
         if self.use_guidance:
             from .guidance.dino_reward import DinoReward
 
@@ -616,8 +617,8 @@ class VA_Server:
             )
             if not hasattr(self, "external_reward"):
                 decoder_dtype = getattr(self.job_config, "external_decoder_dtype", "float32")
-                if decoder_dtype not in ("float32", "bfloat16"):
-                    raise ValueError("GUIDANCE_DECODER_DTYPE must be float32 or bfloat16")
+                if decoder_dtype not in ("float32", "bfloat16", "float16"):
+                    raise ValueError("GUIDANCE_DECODER_DTYPE must be float32, float16 or bfloat16")
                 self.external_reward = DinoReward(
                     self.vae, self.job_config.dino_checkpoint, self.device,
                     len(self.job_config.obs_cam_keys),
@@ -632,9 +633,18 @@ class VA_Server:
             else:
                 frames = self._read_icl_video(icl_video_path)[0].permute(1, 0, 2, 3) / 255.0
             from .guidance.selection import FixedFrameSelector
-            self.guidance_selector = FixedFrameSelector(
-                len(frames), getattr(self.job_config, "reference_frames", "0"),
-            )
+            reference_frames = getattr(self.job_config, "reference_frames", "0")
+            if reference_frames == "last":
+                reference_frames = str(len(frames) - 1)
+            self.guidance_selector = FixedFrameSelector(len(frames), reference_frames)
+            selection_mode = os.environ.get("GUIDANCE_SELECTION", "fixed")
+            if selection_mode == "window":
+                from wan_va.guidance.temporal import WindowFrameSelector
+                self.guidance_selector = WindowFrameSelector(
+                    len(frames), int(os.environ.get("GUIDANCE_MATCH_WINDOW", "24")),
+                    int(os.environ.get("GUIDANCE_LOOKAHEAD", "0")))
+            elif selection_mode != "fixed":
+                raise ValueError("GUIDANCE_SELECTION must be fixed or window")
             self.external_reward.prepare_references(frames)
             self.external_reward.select_reference(self.guidance_selector.fixed_frames)
             self.reference_episode_index = getattr(self, "reference_episode_index", -1) + 1
@@ -812,6 +822,9 @@ class VA_Server:
 
     def _select_guidance_reference(self, request):
         """Selection seam: called once per robot chunk, never inside denoising."""
+        if os.environ.get("GUIDANCE_SELECTION", "fixed") == "window" or os.environ.get("EXPERIMENT_STAGE"):
+            from wan_va.guidance.temporal import select_reference
+            return select_reference(self, request)
         explicit = request.get("guidance_reference_frames")
         indices = self.guidance_selector.select(self.chunk_idx, explicit)
         self.external_reward.select_reference(indices)
@@ -926,10 +939,14 @@ class VA_Server:
                 # Capture one actual prediction for a simulator-free backward replay.
                 capture = os.environ.get("GUIDANCE_CAPTURE")
                 if capture and not getattr(self, "guidance_captured", False):
+                    capture_reward = getattr(self, "external_reward", None)
                     torch.save(dict(sample=latents.detach().cpu(), velocity=noise.detach().cpu(),
                                     sigma=self.scheduler.sigmas[step].cpu(),
                                     base_next=base_next.detach().cpu(),
                                     fixed_first_frame=self.chunk_idx == 0,
+                                    reference_frames=getattr(capture_reward, "selected_frames", None),
+                                    reference_rgb=(capture_reward.reference_images[capture_reward.selected_frames].clone()
+                                                   if capture_reward is not None and capture_reward.selected_frames is not None else None),
                                     observed=self.init_latent[:, :, :1].detach().cpu()
                                     if self.chunk_idx == 0 else None), capture)
                     self.guidance_captured = True
@@ -1022,6 +1039,7 @@ class VA_Server:
         self.transformer.clear_prediction_cache(
             -1, self.cache_name
         )
+        self.latest_guidance_observation = obs['obs']
         latent_input = self._encode_obs(obs)
         if self.chunk_idx == 0:
             latent_input = torch.cat([self.init_latent, latent_input], dim=2)
@@ -1319,7 +1337,7 @@ class VA_Server:
                 max_norm=self.job_config.external_max_norm,
                 checkpoint=resolved(self.job_config.dino_checkpoint),
                 reference_kind=self.external_reference_kind,
-                selection_mode="explicit_fixed_frames",
+                selection_mode=os.environ.get("GUIDANCE_SELECTION", "explicit_fixed_frames"),
                 decoder_dtype=str(next(self.vae.decoder.parameters()).dtype),
                 fixed_reference_frames=getattr(getattr(self, "guidance_selector", None), "fixed_frames", None),
                 reference_frame_count=getattr(getattr(self, "guidance_selector", None), "frame_count", None),

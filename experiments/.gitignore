@@ -1,0 +1,7 @@
+__pycache__/
+.pytest_cache/
+stages/
+runs/
+precision/
+*.source.zip
+README.md
