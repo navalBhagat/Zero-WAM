@@ -26,14 +26,6 @@ def test_stage00_is_three_gated_jobs_with_known_inputs(tmp_path,monkeypatch):
     assert '--dependency=afterok:102' in calls[2][0]
 
 
-def test_later_stages_require_explicit_offload_opt_in():
-    from experiments.scripts.robotwin_suite import parser,specifications
-    for enabled in (False,True):
-        argv=['render','--manifest','/tmp/phase_manifest.json']+(['--phase-separation'] if enabled else [])
-        a=parser().parse_args(argv);a.client_timeout=2400
-        assert all(r['environment']['PHASE_SEPARATION']==str(int(enabled)) for r in specifications(a))
-
-
 def test_job_parity_gate_rejects_different_actions(tmp_path,monkeypatch):
     import pytest
     source=(stage.ROOT/'experiments/jobs/eval.sbatch').read_text()

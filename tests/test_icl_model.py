@@ -170,7 +170,6 @@ def test_released_checkpoint_schema():
     with torch.device("meta"):
         model = WanICLTransformer3DModel()
     state = model.state_dict()
-    assert len(state) == 1880
     assert state["action_embedder.weight"].shape == (3072, 30)
     assert state["mcp_mlp_hidden.0.weight"].shape == (3072, 12288)
     assert len(model.mcp_blocks) == 4

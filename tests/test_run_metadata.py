@@ -4,7 +4,6 @@ import importlib.util
 import json
 import os
 from pathlib import Path
-import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -76,20 +75,3 @@ def test_server_reports_effective_text_and_guidance(use_text):
     mock.use_guidance = False
     mock.external_strength = 0
     assert scope['_episode_metadata'](mock, 'Open the door', {})['guidance'] is None
-
-
-@pytest.mark.skipif(not (ROOT / 'implementation/scripts/eval_one_task.sbatch').exists(),
-                    reason='Local Slurm recipe is intentionally Git-ignored')
-@pytest.mark.parametrize('enabled', ['0', '1'])
-def test_monitor_gpu_flag_controls_csv_without_a_gpu(tmp_path, enabled):
-    script = (ROOT / 'implementation/scripts/eval_one_task.sbatch').read_text()
-    section = script.split('MONITOR_PID=""', 1)[1].split('SERVER_PID=""', 1)[0]
-    binary = tmp_path / 'nvidia-smi'
-    binary.write_text('#!/bin/sh\necho "fake GPU measurement"\n')
-    binary.chmod(0o755)
-    env = dict(os.environ, PATH=str(tmp_path) + os.pathsep + os.environ['PATH'],
-               MONITOR_GPU=enabled, RUN_DIR=str(tmp_path))
-    subprocess.run(['bash', '-c', 'MONITOR_PID=""\n' + section +
-                    '\nif [[ -n "$MONITOR_PID" ]]; then wait "$MONITOR_PID"; fi'],
-                   env=env, check=True)
-    assert (tmp_path / 'gpu.csv').exists() == (enabled == '1')

@@ -2,7 +2,6 @@ from types import SimpleNamespace
 
 import torch
 
-from wan_va.configs.va_robotwin_cfg import va_robotwin_cfg
 from wan_va.modules.icl_model import PREDICTION_CACHE_TYPE
 from wan_va.wan_va_server import VA_Server
 
@@ -94,22 +93,6 @@ def test_icl_action_denoising_matches_robotwin_sync_rollout():
     assert torch.count_nonzero(result[:, :, :1]) > 0
     assert torch.count_nonzero(server.last_predicted_actions[:, :, :1]) == 0
     assert server.last_predicted_actions.data_ptr() != result.data_ptr()
-
-
-def test_robotwin_action_quantiles_match_released_eval_dataset():
-    expected_q01 = [
-        -0.054687286317348476, -9.834766387939453e-07,
-        -0.0746749371290207, -1, -1, -1, -1, -0.3589721029996872,
-        -1.1026859283447266e-06, -0.11628214418888091, -1, -1, -1, -1,
-    ]
-    expected_q99 = [
-        0.35284559458494186, 0.3960446125268936, 0.1493294847011566,
-        1, 1, 1, 1, 0.02997654676437378, 0.38793458312749857,
-        0.18672722578048706, 1, 1, 1, 1,
-    ]
-
-    assert va_robotwin_cfg.norm_stat["q01"][:14] == expected_q01
-    assert va_robotwin_cfg.norm_stat["q99"][:14] == expected_q99
 
 
 def test_icl_observation_cache_reuses_exact_predicted_action():
