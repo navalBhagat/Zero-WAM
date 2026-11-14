@@ -162,7 +162,7 @@ def pairs(episodes, stage):
                 if stage == 'render':
                     compare = left['spp']==32 and right['spp'] in (16,8)
                 elif stage == 'textcheck':
-                    compare = left['mode']=='icl' and right['mode']=='icl_legacy_text'
+                    compare = left['mode']=='icl' and right['mode'] in ('icl_legacy_text','icl_original_caption_only')
                 elif stage == 'baselines':
                     compare = left['mode']=='text' and right['mode']=='icl'
                 elif stage == 'guidance':

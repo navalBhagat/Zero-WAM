@@ -59,3 +59,10 @@ def select_icl_text(source, use_text, target_embedding, cached_embedding):
     if cached_embedding is None:
         raise ValueError('Legacy text test requires text_emb in the human latent file')
     return cached_embedding
+
+
+def select_target_text(use_text, source, prompt_embedding, empty_embedding):
+    """Explicit empty-target option for reproducing pre-switch ICL conditioning."""
+    if source not in ('instruction', 'empty'):
+        raise ValueError('TARGET_TEXT_SOURCE must be instruction or empty')
+    return select_text(use_text and source == 'instruction', prompt_embedding, empty_embedding)

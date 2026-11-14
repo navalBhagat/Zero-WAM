@@ -154,3 +154,36 @@ def test_legacy_text_pair_matches_failed_render_settings():
         assert env['RENDER_SAMPLES_PER_PIXEL']=='32' and env['USE_GUIDANCE']=='0'
         assert env['ICL_GUIDANCE_SCALE']=='5' and env['TEXT_GUIDANCE_SCALE']=='1'
         assert env['VIDEO_STATE_FP32']=='1'
+
+
+def test_original_comparison_uses_empty_robot_text():
+    off,on=specifications(args('textcheck'))
+    assert off['environment']['USE_TEXT']=='0'
+    assert on['environment']['TARGET_TEXT_SOURCE']=='empty'
+    assert on['environment']['ICL_TEXT_SOURCE']=='cached'
+
+
+def test_append_preserves_old_jobs_and_uses_same_folder(tmp_path,monkeypatch):
+    from experiments.scripts import append_original_icl as script
+    import copy
+    specs=specifications(args('textcheck'))
+    old=copy.deepcopy(specs)
+    manifest=tmp_path/'manifest.json'
+    manifest.write_text(json.dumps(dict(stage='textcheck',runs=specs,
+        source_digest='historical',estimate=dict(episodes=2,sbu=64,requested_walltime_sbu_ceiling=256))))
+    real=script.subprocess.check_output; calls=[]
+    def check(cmd,**kwargs):
+        if cmd[0]!='sbatch': return real(cmd,**kwargs)
+        calls.append((cmd,kwargs['env'])); return '12345\n'
+    monkeypatch.setattr(script.subprocess,'check_output',check)
+    monkeypatch.setattr(sys,'argv',['append',str(manifest),'--submit'])
+    script.main()
+    result=json.loads(manifest.read_text())
+    assert result['runs'][:2]==old and result['source_digest']=='historical'
+    assert len(calls)==1 and len(result['runs'])==3
+    added=result['runs'][-1]
+    assert added['job_id']=='12345' and added['environment']['TARGET_TEXT_SOURCE']=='empty'
+    assert added['environment']['EXPERIMENT_OUTPUT_ROOT']==str(tmp_path/'runs')
+    assert f'--output={tmp_path}/slurm_%j.out' in calls[0][0]
+    assert result['estimate']['episodes']==3
+    assert list(tmp_path.glob('manifest.before_original_*.json'))

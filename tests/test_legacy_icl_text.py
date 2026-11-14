@@ -51,3 +51,10 @@ def test_actual_cache_builder_receives_cached_embedding(monkeypatch):
     scope['_cache_icl_context'](mock,'video','latent')
     assert mock.cached_caption_used
     torch.testing.assert_close(payloads[0]['text_emb'],cached)
+
+
+def test_original_target_empty_and_caption_are_independent():
+    target,empty,cached=object(),object(),object()
+    assert conditioning.select_target_text(True,'empty',target,empty) is empty
+    assert conditioning.select_icl_text('cached',True,target,cached) is cached
+    assert conditioning.select_target_text(True,'instruction',target,empty) is target

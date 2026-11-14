@@ -20,7 +20,7 @@ CONTROLLED = ('GUIDANCE_CAPTURE', 'GUIDANCE_SELECTION', 'GUIDANCE_REFERENCE_FRAM
               'GUIDANCE_EVERY', 'GUIDANCE_MAX_NORM', 'GUIDANCE_REFERENCE_SOURCE',
               'GUIDANCE_DECODER_DTYPE', 'GUIDANCE_STATE_DTYPE', 'VIDEO_STATE_FP32',
               'USE_ICL', 'USE_TEXT', 'USE_GUIDANCE', 'TEXT_GUIDANCE_SCALE',
-              'ICL_GUIDANCE_SCALE', 'ICL_TEXT_SOURCE', 'SEED', 'SAMPLING_SEED', 'ICL_SEED')
+              'ICL_GUIDANCE_SCALE', 'TARGET_TEXT_SOURCE', 'ICL_TEXT_SOURCE', 'SEED', 'SAMPLING_SEED', 'ICL_SEED')
 
 
 def specifications(a):
@@ -51,7 +51,7 @@ def specifications(a):
                     ICL_SEED=str(seed), SAMPLING_SEED=str(10000 + seed),
                     TEST_NUM=str(1 if a.stage in ('render', 'textcheck') else a.episodes),
                     USE_ICL=str(icl), USE_TEXT=str(text), USE_GUIDANCE=str(guide),
-                    ICL_TEXT_SOURCE='cached' if mode=='icl_legacy_text' else 'target',
+                    ICL_TEXT_SOURCE='cached' if mode=='icl_legacy_text' else 'target', TARGET_TEXT_SOURCE='empty' if mode=='icl_legacy_text' else 'instruction',
                     ICL_GUIDANCE_SCALE='5', TEXT_GUIDANCE_SCALE='5' if mode=='text' else '1',
                     RENDER_SAMPLES_PER_PIXEL=str(spp), PROFILE_TIMING='1', PROFILE_SYNC_GPU='0',
                     MONITOR_GPU='1', TEXT_ENCODER_OFFLOAD='1', VIDEO_STATE_FP32='1',

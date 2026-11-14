@@ -721,13 +721,14 @@ class VA_Server:
         self.target_text_cfg_active = (
             not self.use_icl_cfg and self.video_guidance_scale > 1.0
         )
-        from .conditioning import select_text
-        self.target_prompt_embeds = select_text(
-            self.use_text, self.prompt_embeds, self.negative_prompt_embeds,
+        from .conditioning import select_target_text
+        self.target_text_source = os.environ.get("TARGET_TEXT_SOURCE", "instruction")
+        self.target_prompt_embeds = select_target_text(
+            self.use_text, self.target_text_source, self.prompt_embeds, self.negative_prompt_embeds,
         )
-        logger.info("[conditioning] use_icl=%s use_text=%s use_guidance=%s; icl_text_source=%s",
+        logger.info("[conditioning] use_icl=%s use_text=%s use_guidance=%s; icl_text_source=%s target_text_source=%s",
                     self.use_icl, self.use_text, self.use_guidance,
-                    self.icl_text_source)
+                    self.icl_text_source, self.target_text_source)
         if self.use_icl:
             self._cache_icl_context(icl_video_path, icl_latent_path)
         self.streaming_vae.clear_cache()
@@ -1339,7 +1340,7 @@ class VA_Server:
         def resolved(value):
             return os.path.realpath(os.path.expanduser(value)) if value else None
 
-        model_text = prompt if self.use_text else ""
+        model_text = prompt if self.use_text and getattr(self, "target_text_source", "instruction") == "instruction" else ""
         guidance = None
         if self.use_guidance:
             guidance = dict(
@@ -1356,6 +1357,7 @@ class VA_Server:
         return dict(
             use_icl=self.use_icl, use_text=self.use_text, use_guidance=self.use_guidance,
             model_text=model_text,
+            target_text_source=getattr(self, "target_text_source", "instruction"),
             icl_context_text=(None if getattr(self, "cached_caption_used", False)
                               else model_text if self.use_icl else None),
             icl_text_source=os.environ.get("ICL_TEXT_SOURCE", "target"),
