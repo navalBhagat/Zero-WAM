@@ -167,10 +167,14 @@ def test_append_preserves_old_jobs_and_uses_same_folder(tmp_path,monkeypatch):
     from experiments.scripts import append_original_icl as script
     import copy
     specs=specifications(args('textcheck'))
+    previous=copy.deepcopy(specs[0])
+    previous.update(label='icl_original_caption_only',mode='icl_original_caption_only',job_id='99999')
+    previous['environment']['SAMPLING_SEED']='1234'
+    specs.append(previous)
     old=copy.deepcopy(specs)
     manifest=tmp_path/'manifest.json'
     manifest.write_text(json.dumps(dict(stage='textcheck',runs=specs,
-        source_digest='historical',estimate=dict(episodes=2,sbu=64,requested_walltime_sbu_ceiling=256))))
+        source_digest='historical',estimate=dict(episodes=3,sbu=117.33,requested_walltime_sbu_ceiling=384))))
     real=script.subprocess.check_output; calls=[]
     def check(cmd,**kwargs):
         if cmd[0]!='sbatch': return real(cmd,**kwargs)
@@ -179,11 +183,22 @@ def test_append_preserves_old_jobs_and_uses_same_folder(tmp_path,monkeypatch):
     monkeypatch.setattr(sys,'argv',['append',str(manifest),'--submit'])
     script.main()
     result=json.loads(manifest.read_text())
-    assert result['runs'][:2]==old and result['source_digest']=='historical'
-    assert len(calls)==1 and len(result['runs'])==3
+    assert result['runs'][:3]==old and result['source_digest']=='historical'
+    assert len(calls)==1 and len(result['runs'])==4
     added=result['runs'][-1]
     assert added['job_id']=='12345' and added['environment']['TARGET_TEXT_SOURCE']=='empty'
     assert added['environment']['EXPERIMENT_OUTPUT_ROOT']==str(tmp_path/'runs')
     assert f'--output={tmp_path}/slurm_%j.out' in calls[0][0]
-    assert result['estimate']['episodes']==3
+    assert result['estimate']['episodes']==4
+    assert added['environment']['SAMPLING_SEED']=='1234'
+    assert added['task']=='place_empty_cup' and added['environment']['TASK']=='place_empty_cup'
+    assert added['environment']['RENDER_SAMPLES_PER_PIXEL']=='32'
+    assert added['environment']['ICL_GUIDANCE_SCALE']=='5'
+    assert added['environment']['USE_GUIDANCE']=='0'
+    assert added['environment']['SEED']=='0' and added['environment']['ICL_SEED']=='0'
+    assert added['environment']['VIDEO_STATE_FP32']=='1'
+    assert added['label']=='place_empty_cup_icl_original_caption_only_s1234'
+    import pytest
+    with pytest.raises(SystemExit): script.main()
+    assert len(calls)==1
     assert list(tmp_path.glob('manifest.before_original_*.json'))

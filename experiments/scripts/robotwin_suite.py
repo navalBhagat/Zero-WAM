@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 MODES = {'text': (0, 1, 0), 'icl': (1, 0, 0), 'guidance': (0, 0, 1),
          'icl_guidance': (1, 0, 1), 'icl_legacy_text': (1, 1, 0)}
 # Do not let an earlier interactive experiment silently contaminate a new stage.
-CONTROLLED = ('GUIDANCE_CAPTURE', 'GUIDANCE_SELECTION', 'GUIDANCE_REFERENCE_FRAMES',
+CONTROLLED = ('PHASE_COMPARE_ACTIONS', 'PHASE_SEPARATION', 'PHASE_OFFLOAD_TRANSFORMER', 'STAGE_REQUIRE_SUCCESS', 'GUIDANCE_CAPTURE', 'GUIDANCE_SELECTION', 'GUIDANCE_REFERENCE_FRAMES',
               'GUIDANCE_MATCH_WINDOW', 'GUIDANCE_LOOKAHEAD', 'GUIDANCE_STRENGTH',
               'GUIDANCE_EVERY', 'GUIDANCE_MAX_NORM', 'GUIDANCE_REFERENCE_SOURCE',
               'GUIDANCE_DECODER_DTYPE', 'GUIDANCE_STATE_DTYPE', 'VIDEO_STATE_FP32',
@@ -54,7 +54,7 @@ def specifications(a):
                     ICL_TEXT_SOURCE='cached' if mode=='icl_legacy_text' else 'target', TARGET_TEXT_SOURCE='empty' if mode=='icl_legacy_text' else 'instruction',
                     ICL_GUIDANCE_SCALE='5', TEXT_GUIDANCE_SCALE='5' if mode=='text' else '1',
                     RENDER_SAMPLES_PER_PIXEL=str(spp), PROFILE_TIMING='1', PROFILE_SYNC_GPU='0',
-                    MONITOR_GPU='1', TEXT_ENCODER_OFFLOAD='1', VIDEO_STATE_FP32='1',
+                    PHASE_SEPARATION=str(int(getattr(a, 'phase_separation', False))), PHASE_OFFLOAD_TRANSFORMER='1', STAGE_REQUIRE_SUCCESS='0', MONITOR_GPU='1', TEXT_ENCODER_OFFLOAD='1', VIDEO_STATE_FP32='1',
                     GUIDANCE_DECODER_DTYPE=dtype, GUIDANCE_SELECTION=selector,
                     GUIDANCE_MATCH_WINDOW=str(a.window), GUIDANCE_LOOKAHEAD=str(a.lookahead),
                     GUIDANCE_REFERENCE_FRAMES=str(a.fixed_frame), GUIDANCE_STRENGTH=str(a.strength),
@@ -90,6 +90,7 @@ def parser():
     p.add_argument('--sbu-per-hour', type=float, default=128)
     p.add_argument('--budget-sbu', type=float, default=12202 + 52/60)
     p.add_argument('--submit', action='store_true')
+    p.add_argument('--phase-separation', action='store_true', help='Opt into single-GPU observation-encoding offload after stage-00 validation')
     return p
 
 

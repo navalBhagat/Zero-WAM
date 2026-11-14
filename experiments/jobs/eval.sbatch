@@ -187,6 +187,7 @@ CLIENT_FINISHED=$(date +%s)
 # Require the requested number of completed episodes, not just a partial file.
 python - "$RUN_DIR" "$TASK" "$TEST_NUM" <<'PY'
 import json
+import os
 import sys
 from pathlib import Path
 root, task, expected = Path(sys.argv[1]), sys.argv[2], int(sys.argv[3])
@@ -198,5 +199,16 @@ print(files[0])
 print(json.dumps(metrics, indent=2))
 if metrics["total_num"] != expected:
     raise SystemExit("Completed episode count differs from TEST_NUM; evaluation is incomplete.")
+if os.environ.get("STAGE_REQUIRE_SUCCESS") == "1" and metrics["succ_num"] != expected:
+    raise SystemExit("Stage-00 cup control did not succeed; dependent tests must not start.")
+reference = os.environ.get("PHASE_COMPARE_ACTIONS")
+if reference:
+    def hashes(path):
+        return [json.loads(line) for line in Path(path).read_text().splitlines() if line.strip()]
+    expected_actions = hashes(reference)
+    actual_actions = hashes(root / "phase_actions.jsonl")
+    if not expected_actions or actual_actions != expected_actions:
+        raise SystemExit("Stage-00 action hashes differ; dependent microwave test must not start.")
+    print(f"Stage-00 parity: all {len(actual_actions)} action chunks match the control.")
 PY
 echo "Evaluation finished. Results: $RUN_DIR"

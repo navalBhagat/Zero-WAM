@@ -47,6 +47,13 @@ class VA_Server:
         self.cache_name = 'pos'
         self.job_config = job_config
         self.save_root = job_config.save_root
+        for name, default in (("PHASE_SEPARATION", "0"), ("PHASE_OFFLOAD_TRANSFORMER", "1")):
+            if os.environ.get(name, default) not in ("0", "1"):
+                raise ValueError(f"{name} must be 0 or 1")
+        self.phase_separation = os.environ.get("PHASE_SEPARATION", "0") == "1"
+        self.phase_offload_transformer = os.environ.get("PHASE_OFFLOAD_TRANSFORMER", "1") == "1"
+        if self.phase_separation and int(os.environ.get("WORLD_SIZE", "1")) != 1:
+            raise ValueError("PHASE_SEPARATION supports single-GPU unsharded inference only")
         self.dtype = job_config.param_dtype
         self.device = torch.device(f"cuda:{job_config.local_rank}")
         self.enable_offload = getattr(job_config, 'enable_offload', True)  # offload vae & text_encoder to save vram
@@ -115,7 +122,8 @@ class VA_Server:
             disable_mcp=not self.use_icl_model,
             icl_model=self.use_icl_model,
         )
-        shard_fn = shard_model
+        # Single-GPU phase experiments must not create FSDP-managed parameters.
+        shard_fn = (lambda model: model) if self.phase_separation else shard_model
         self.transformer = _configure_model(model=self.transformer,
                                             shard_fn=shard_fn,
                                             param_dtype=self.dtype,
@@ -858,7 +866,9 @@ class VA_Server:
         if strength and hasattr(self, "guidance_selector"):
             self._select_guidance_reference(obs)
         if self.chunk_idx == 0:
-            self.init_latent = self._encode_initial_obs(obs)
+            from .modules.phase_separation import encode_with_phase_separation
+            self.init_latent = encode_with_phase_separation(
+                self, self._encode_initial_obs, obs, "initial_observation")
         latents = torch.randn(
             1,
             48,
@@ -1031,6 +1041,12 @@ class VA_Server:
         self.last_predicted_actions = cached_actions
         logger.info(f"[ICL] cache after infer: {self.transformer.cache_counts()}")
         result = self.postprocess_action(actions)
+        if getattr(self, "phase_separation", False):
+            from .modules.phase_separation import action_digest
+            action_hash = action_digest(result)
+            import json
+            with open(os.path.join(self.save_root, "phase_actions.jsonl"), "a") as stream:
+                stream.write(json.dumps(dict(chunk=self.chunk_idx,sha256=action_hash)) + "\n")
         if profile:
             torch.cuda.synchronize(self.device)
             finished = time.perf_counter()
@@ -1051,7 +1067,9 @@ class VA_Server:
             -1, self.cache_name
         )
         self.latest_guidance_observation = obs['obs']
-        latent_input = self._encode_obs(obs)
+        from .modules.phase_separation import encode_with_phase_separation
+        latent_input = encode_with_phase_separation(
+            self, self._encode_obs, obs, "observation_update")
         if self.chunk_idx == 0:
             latent_input = torch.cat([self.init_latent, latent_input], dim=2)
         if self.last_predicted_actions is None:
@@ -1367,6 +1385,8 @@ class VA_Server:
             reference_paths=dict(video=resolved(request.get("icl_video_path")),
                                  latent=resolved(request.get("icl_latent_path"))),
             model_path=resolved(self.job_config.model_path),
+            phase_separation=getattr(self, "phase_separation", False),
+            phase_offload_transformer=getattr(self, "phase_offload_transformer", False),
             transformer_dtype=str(self.dtype),
             video_state_dtype="torch.float32" if self.external_strength or
                 getattr(self.job_config, "video_state_fp32", False) else str(self.dtype),
