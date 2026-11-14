@@ -140,3 +140,17 @@ def test_matching_contact_sheet_and_trace(tmp_path,monkeypatch):
     main()
     assert (tmp_path/'matching_analysis/episode_000_contact_sheet.jpg').is_file()
     assert (tmp_path/'matching_analysis/episode_000_matching.png').is_file()
+
+
+def test_legacy_text_pair_matches_failed_render_settings():
+    specs=specifications(args('textcheck'))
+    assert len(specs)==2
+    off,on=[s['environment'] for s in specs]
+    assert off['USE_TEXT']=='0' and off['ICL_TEXT_SOURCE']=='target'
+    assert on['USE_TEXT']=='1' and on['ICL_TEXT_SOURCE']=='cached'
+    for env in (off,on):
+        assert env['TEST_NUM']=='1' and env['TASK']=='open_microwave'
+        assert env['SEED']=='0' and env['SAMPLING_SEED']=='10000' and env['ICL_SEED']=='0'
+        assert env['RENDER_SAMPLES_PER_PIXEL']=='32' and env['USE_GUIDANCE']=='0'
+        assert env['ICL_GUIDANCE_SCALE']=='5' and env['TEXT_GUIDANCE_SCALE']=='1'
+        assert env['VIDEO_STATE_FP32']=='1'

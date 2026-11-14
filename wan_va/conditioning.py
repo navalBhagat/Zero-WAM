@@ -46,3 +46,16 @@ def read_conditioning(env):
 def select_text(use_text, prompt_embedding, empty_embedding):
     """Used for both target and human-context inputs; ignore stored human captions."""
     return prompt_embedding if use_text else empty_embedding
+
+
+def select_icl_text(source, use_text, target_embedding, cached_embedding):
+    """Explicit legacy-caption diagnostic; ordinary runs keep the target embedding."""
+    if source not in ('target', 'cached'):
+        raise ValueError('ICL_TEXT_SOURCE must be target or cached')
+    if source == 'target':
+        return target_embedding
+    if not use_text:
+        raise ValueError('ICL_TEXT_SOURCE=cached requires USE_TEXT=1')
+    if cached_embedding is None:
+        raise ValueError('Legacy text test requires text_emb in the human latent file')
+    return cached_embedding

@@ -525,14 +525,20 @@ class VA_Server:
         return latent, None
 
     def _cache_icl_context(self, video_path, latent_path):
-        latent, _ = self._load_or_encode_icl(video_path, latent_path)
+        latent, cached_text = self._load_or_encode_icl(video_path, latent_path)
         expected_channels = len(self.vae.config.latents_mean)
         if latent.shape[1] != expected_channels:
             raise ValueError(
                 f"ICL latent has {latent.shape[1]} channels; expected {expected_channels}"
             )
-        # Never inject the .pth's cached caption behind USE_TEXT's back.
-        text_emb = self.target_prompt_embeds
+        source = getattr(self, "icl_text_source", "target")
+        if source == "target":
+            text_emb = self.target_prompt_embeds
+        else:
+            from .conditioning import select_icl_text
+            text_emb = select_icl_text(source, self.use_text, self.target_prompt_embeds, cached_text)
+        self.cached_caption_used = source == "cached"
+        text_emb = text_emb.to(device=self.device, dtype=self.dtype)
         latent = latent.to(device=self.device, dtype=self.dtype)
         patch_size = self.transformer.patch_size
         grid_id = get_mesh_id(
@@ -588,7 +594,9 @@ class VA_Server:
         use_text=None,
         use_guidance=None,
     ):
+        import os
         from .conditioning import flag
+        self.icl_text_source = os.environ.get("ICL_TEXT_SOURCE", "target")
         self.use_text = flag(getattr(self.job_config, "use_text", False) if use_text is None else use_text, "use_text")
         self.use_guidance = flag(getattr(self.job_config, "use_guidance", False) if use_guidance is None else use_guidance, "use_guidance")
         self.external_strength = (getattr(self.job_config, "guidance_strength", 0.01)
@@ -596,6 +604,7 @@ class VA_Server:
         if self.use_text and not prompt:
             raise ValueError("Robotwin ICL inference requires a prompt")
         # Load only when enabled; reuse weights but replace reference each episode.
+        self.cached_caption_used = False
         self.last_guidance_selection = None
         self.latest_guidance_observation = None
         if self.use_guidance:
@@ -716,8 +725,9 @@ class VA_Server:
         self.target_prompt_embeds = select_text(
             self.use_text, self.prompt_embeds, self.negative_prompt_embeds,
         )
-        logger.info("[conditioning] use_icl=%s use_text=%s use_guidance=%s; cached caption ignored",
-                    self.use_icl, self.use_text, self.use_guidance)
+        logger.info("[conditioning] use_icl=%s use_text=%s use_guidance=%s; icl_text_source=%s",
+                    self.use_icl, self.use_text, self.use_guidance,
+                    self.icl_text_source)
         if self.use_icl:
             self._cache_icl_context(icl_video_path, icl_latent_path)
         self.streaming_vae.clear_cache()
@@ -1346,8 +1356,10 @@ class VA_Server:
         return dict(
             use_icl=self.use_icl, use_text=self.use_text, use_guidance=self.use_guidance,
             model_text=model_text,
-            icl_context_text=model_text if self.use_icl else None,
-            cached_caption_used=False,
+            icl_context_text=(None if getattr(self, "cached_caption_used", False)
+                              else model_text if self.use_icl else None),
+            icl_text_source=os.environ.get("ICL_TEXT_SOURCE", "target"),
+            cached_caption_used=getattr(self, "cached_caption_used", False),
             icl_guidance_scale=self.icl_guidance_scale if self.use_icl else None,
             text_guidance_scale=self.video_guidance_scale if self.use_text else None,
             reference_paths=dict(video=resolved(request.get("icl_video_path")),
