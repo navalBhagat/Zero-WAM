@@ -15,17 +15,18 @@ def args(stage):
     return a
 
 
-def test_render_default_is_nine_paired_episodes():
+def test_render_default_is_three_paired_episodes():
     specs=specifications(args('render'))
-    assert len(specs)==9
+    assert len(specs)==3
     assert {s['task'] for s in specs}=={'place_object_scale'}
-    for repeat in range(3):
-        group=[s for s in specs if s['repeat']==repeat]
-        assert {s['environment']['RENDER_SAMPLES_PER_PIXEL'] for s in group}=={'8','16','32'}
-        assert len({s['environment']['SAMPLING_SEED'] for s in group})==1
-        assert all(s['environment']['TEST_NUM']=='1' for s in group)
-    assert specs[0]['environment']['RENDER_SAMPLES_PER_PIXEL']=='32'
-    assert specs[3]['environment']['RENDER_SAMPLES_PER_PIXEL']=='16'
+    assert [s['environment']['RENDER_SAMPLES_PER_PIXEL'] for s in specs]==['32','16','8']
+    assert {s['environment']['SAMPLING_SEED'] for s in specs}=={'1234'}
+    assert all(s['environment']['TEST_NUM']=='1' and s['repeat']==0 for s in specs)
+    # Explicit repetitions still rotate order while preserving each paired set.
+    a=args('render');a.repeats=3
+    repeated=specifications(a)
+    assert len(repeated)==9
+    assert [s['environment']['RENDER_SAMPLES_PER_PIXEL'] for s in repeated[3:6]]==['16','8','32']
 
 
 def test_exclusive_breakdown_not_inclusive_double_count():
@@ -70,7 +71,7 @@ def test_submission_is_serial_and_scrubs_inherited_controls(tmp_path, monkeypatc
     monkeypatch.setattr(sys,'argv',['suite','render','--manifest',str(manifest),'--submit'])
     suite.main()
     data=json.loads(manifest.read_text())
-    assert len(calls)==9 and all(s['status']=='submitted' for s in data['runs'])
+    assert len(calls)==3 and all(s['status']=='submitted' for s in data['runs'])
     assert not any(c.startswith('--dependency') for c in calls[0][0])
     assert '--dependency=afterany:101' in calls[1][0]
     assert all('GUIDANCE_CAPTURE' not in env for _,env in calls)

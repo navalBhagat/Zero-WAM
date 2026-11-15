@@ -720,9 +720,6 @@ def eval_policy(task_name,
             Path(args['save_root']) / 'snapshots' / f'episode_{now_id:03d}',
             enabled=os.environ.get("SAVE_ROLLOUT_SNAPSHOTS", "0") == "1")
         snapshots.write(initial_formatted_obs, -1, TASK_ENV.take_action_cnt, TASK_ENV.eval_success)
-        # Optional task-specific instrumentation lives outside the rollout loop.
-        from evaluation.robotwin.task_diagnostics import make_task_diagnostic
-        task_diagnostic = make_task_diagnostic(task_name, Path(args['save_root']), now_id)
         rollout_chunk = 0
         first_obs = None
         while TASK_ENV.take_action_cnt<TASK_ENV.step_lim:
@@ -770,8 +767,6 @@ def eval_policy(task_name,
                     else:
                         raise NotImplementedError
                     TASK_ENV.take_action(ee_action, action_type='ee')
-                    if task_diagnostic is not None:
-                        task_diagnostic.record(TASK_ENV, rollout_chunk)
                    
                     if (j+1) % action_per_frame == 0 or TASK_ENV.eval_success:
                         obs = format_obs(TASK_ENV.get_obs(), prompt)

@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 MODES = {'text': (0, 1, 0), 'icl': (1, 0, 0), 'guidance': (0, 0, 1),
          'icl_guidance': (1, 0, 1)}
 # Do not let an earlier interactive experiment silently contaminate a new stage.
-CONTROLLED = ('TASK_DIAGNOSTICS', 'COMPACT_OBSERVATION_CACHE', 'SAVE_ROLLOUT_SNAPSHOTS', 'PHASE_COMPARE_ACTIONS', 'PHASE_SEPARATION', 'PHASE_OFFLOAD_TRANSFORMER', 'STAGE_REQUIRE_SUCCESS', 'GUIDANCE_CAPTURE', 'GUIDANCE_SELECTION', 'GUIDANCE_REFERENCE_FRAMES',
+CONTROLLED = ('COMPACT_OBSERVATION_CACHE', 'SAVE_ROLLOUT_SNAPSHOTS', 'PHASE_COMPARE_ACTIONS', 'PHASE_SEPARATION', 'PHASE_OFFLOAD_TRANSFORMER', 'STAGE_REQUIRE_SUCCESS', 'GUIDANCE_CAPTURE', 'GUIDANCE_SELECTION', 'GUIDANCE_REFERENCE_FRAMES',
               'GUIDANCE_MATCH_WINDOW', 'GUIDANCE_LOOKAHEAD', 'GUIDANCE_STRENGTH',
               'GUIDANCE_EVERY', 'GUIDANCE_MAX_NORM', 'GUIDANCE_REFERENCE_SOURCE',
               'GUIDANCE_DECODER_DTYPE', 'GUIDANCE_STATE_DTYPE', 'VIDEO_STATE_FP32',
@@ -31,7 +31,7 @@ def specifications(a):
     for task in tasks:
         for seed in seeds:
             if a.stage == 'render':
-                # Rotate submission order; three exact repetitions of each paired setting.
+                # Rotate submission order; paired settings when multiple repetitions are requested.
                 variants = [(f'spp{s}_r{r}', 'icl', s, 'fixed', 'float32', r)
                             for r in range(a.repeats)
                             for s in ((32, 16, 8)[r % 3:] + (32, 16, 8)[:r % 3])]
@@ -74,7 +74,7 @@ def parser():
     p.add_argument('--compact-cache', action='store_true', help='Opt in after stage-00 validation')
     p.add_argument('--seeds', nargs='+', type=int)
     p.add_argument('--episodes', type=int, default=10)
-    p.add_argument('--repeats', type=int, default=3)
+    p.add_argument('--repeats', type=int, default=1)
     p.add_argument('--spp', type=int, choices=[8, 16, 32], default=32)
     p.add_argument('--window', type=int, default=24)
     p.add_argument('--lookahead', type=int, default=4)

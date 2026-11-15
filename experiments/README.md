@@ -88,43 +88,28 @@ Use `--cup-only` for only the two cup jobs. The full test has an approximate
 transfer/runtime costs vary. Blocked jobs consume no GPU runtime; cancel them by
 recorded job ID if a prerequisite fails. Do not submit duplicate batches.
 
-### Three task diagnostics before phase 1
+### Completed pre-phase-1 diagnostics
 
-The completed cup controls need not be repeated. Submit one episode each of
-`open_microwave`, `place_object_scale`, and `place_bread_basket`:
+All three diagnostic jobs completed successfully with model seed 1234, simulator
+seed 100000, demo seed 0, 32 SPP, original ICL captions, FP32 video state, observation
+offload and padding compaction:
 
-```bash
-python3 experiments/scripts/run_stage00.py --diagnostics --submit
-```
+| Task / job | Allocated minutes | Simulator actions | Success |
+| --- | ---: | ---: | --- |
+| open_microwave / 29284241 | 20.8 | 860 | Yes |
+| place_object_scale / 29284242 | 7.5 | 131 | Yes |
+| place_bread_basket / 29284243 | 6.6 | 139 | Yes |
 
-Outputs go to `experiments/stages/00_task_diagnostics/`. All three use model seed
-1234, simulator seed 100000 (run seed 0), demo seed 0, 32 SPP, original ICL captions,
-FP32 video state, observation offload and padding compaction. Each requests one A100,
-18 CPU cores and one hour; the client timeout is 50 minutes after startup.
-Planning allowance is 128 SBUs total (60 minutes); the wall-limit ceiling is 384 SBUs.
-Jobs use `afterany` to avoid concurrent shared Robotwin writes while allowing the
-scale and bread tests to proceed if microwave OOMs. No phase 1 jobs launch automatically.
+Microwave reached opening fraction 0.6164 against the unchanged 0.6 threshold and
+stopped at that action. Total approximate cost was 74.5 SBUs at 128 SBUs/hour.
+This validates these episodes, not arbitrary long histories or guidance memory.
+The temporary microwave instrumentation and three-task launcher mode have been
+removed; saved results/source snapshots remain intact. The analyzer still supports
+historical door logs.
 
-The client stops on Robotwin's existing `eval_success` after each action, captures
-the final observation, and skips terminal cache updates. It never substitutes the
-raw task predicate for Robotwin's success flag. The next episode resets the server.
-Stopping policy is recorded in episode metadata; earlier timing results may include
-extra terminal cache work.
-
-Microwave instrumentation is opt-in via `TASK_DIAGNOSTICS=microwave`, implemented
-in `evaluation/robotwin/task_diagnostics.py` with a factory and one record hook in
-the client. Other tasks receive no diagnostic object. The per-episode JSONL under
-`runs/open_microwave_<jobid>/diagnostics/` records post-action door angles, upper
-limits, the existing 60% threshold, raw task success and latched evaluator success.
-These samples do not record every internal physics step. This does not fix long-history OOM.
-
-```bash
-python3 experiments/analysis/analyze_stage00.py experiments/stages/00_task_diagnostics/manifest.json
-```
-
-The shared analyzer writes memory/timing reports, `microwave_door.csv`, and
-`microwave_door.png` (when angle logs exist). Review task outcomes and OOMs before
-starting phase 1; a completed unsuccessful task is distinct from infrastructure failure.
+The client retains early stopping on Robotwin's latched `eval_success`, captures
+the terminal observation, and skips the terminal cache update. The next episode
+resets the server. Stopping policy is recorded in episode metadata.
 
 ### What changes in memory
 
@@ -167,20 +152,20 @@ memory for external guidance backward. Runtime compaction code is in
 
 New evaluation tasks: **place_object_scale and place_bread_basket**. Model sampling
 seed defaults to **1234**, fixed across paired settings; use `--seeds` for run/demo
-seed groups. A rendering preview/submission defaults to nine episodes on scale:
-three repeated episodes at each of 32, 16 and 8 SPP, rotating order. These are timing
-replicates, not independent success-rate evidence.
+seed groups. A rendering preview/submission defaults to three episodes on scale:
+one episode each at 32, 16 and 8 SPP, with the same seeds. This is a compute-saving
+timing comparison without repeat-based uncertainty estimates.
 
 After stage-00 review, explicitly opt into the validated memory configuration:
 
 ```bash
 python3 experiments/scripts/robotwin_suite.py render \
-  --phase-separation --compact-cache \
+  --phase-separation --compact-cache --repeats 1 \
   --manifest experiments/stages/01_render/manifest.json --submit
 python experiments/analysis/analyze.py experiments/stages/01_render/manifest.json --sacct
 ```
 
-`--tasks place_object_scale place_bread_basket` runs 18 episodes instead of nine.
+`--tasks place_object_scale place_bread_basket` runs six episodes instead of three.
 Alternatively validate the chosen SPP on bread separately. Inspect saved videos,
 matched seconds/action and seconds/chunk, as well as total episode time. An early
 failure is not a speedup. Episode profiles exclude expert feasibility checks;

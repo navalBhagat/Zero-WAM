@@ -24,21 +24,3 @@ def test_stage00_is_three_gated_jobs_with_known_inputs(tmp_path,monkeypatch):
     assert [r['environment']['COMPACT_OBSERVATION_CACHE'] for r in runs]==['0','1','1']
     assert '--dependency=afterok:101' in calls[1][0]
     assert '--dependency=afterok:102' in calls[2][0]
-
-
-def test_task_diagnostics_continue_after_failed_job(tmp_path,monkeypatch):
-    manifest=tmp_path/'manifest.json';calls=[];real=stage.subprocess.check_output
-    def check(cmd,**kwargs):
-        if cmd[0]!='sbatch':return real(cmd,**kwargs)
-        calls.append((cmd,kwargs['env']));return str(200+len(calls))+'\n'
-    monkeypatch.setattr(stage.subprocess,'check_output',check)
-    monkeypatch.setattr(sys,'argv',['stage','--diagnostics','--manifest',str(manifest),'--submit'])
-    stage.main();runs=json.loads(manifest.read_text())['runs']
-    assert [r['task'] for r in runs]==['open_microwave','place_object_scale','place_bread_basket']
-    assert [r['environment']['TASK_DIAGNOSTICS'] for r in runs]==['microwave','','']
-    assert all(r['environment']['COMPACT_OBSERVATION_CACHE']=='1' and
-               r['environment']['TEST_NUM']=='1' and
-               r['environment']['SAMPLING_SEED']=='1234' and
-               r['environment']['SEED']=='0' for r in runs)
-    assert '--dependency=afterany:201' in calls[1][0]
-    assert '--dependency=afterany:202' in calls[2][0]
