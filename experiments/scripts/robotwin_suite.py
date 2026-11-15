@@ -13,9 +13,9 @@ from experiments.scripts.provenance import snapshot
 
 ROOT = Path(__file__).resolve().parents[2]
 MODES = {'text': (0, 1, 0), 'icl': (1, 0, 0), 'guidance': (0, 0, 1),
-         'icl_guidance': (1, 0, 1), 'icl_legacy_text': (1, 1, 0)}
+         'icl_guidance': (1, 0, 1)}
 # Do not let an earlier interactive experiment silently contaminate a new stage.
-CONTROLLED = ('SAVE_ROLLOUT_SNAPSHOTS', 'PHASE_COMPARE_ACTIONS', 'PHASE_SEPARATION', 'PHASE_OFFLOAD_TRANSFORMER', 'STAGE_REQUIRE_SUCCESS', 'GUIDANCE_CAPTURE', 'GUIDANCE_SELECTION', 'GUIDANCE_REFERENCE_FRAMES',
+CONTROLLED = ('COMPACT_OBSERVATION_CACHE', 'SAVE_ROLLOUT_SNAPSHOTS', 'PHASE_COMPARE_ACTIONS', 'PHASE_SEPARATION', 'PHASE_OFFLOAD_TRANSFORMER', 'STAGE_REQUIRE_SUCCESS', 'GUIDANCE_CAPTURE', 'GUIDANCE_SELECTION', 'GUIDANCE_REFERENCE_FRAMES',
               'GUIDANCE_MATCH_WINDOW', 'GUIDANCE_LOOKAHEAD', 'GUIDANCE_STRENGTH',
               'GUIDANCE_EVERY', 'GUIDANCE_MAX_NORM', 'GUIDANCE_REFERENCE_SOURCE',
               'GUIDANCE_DECODER_DTYPE', 'GUIDANCE_STATE_DTYPE', 'VIDEO_STATE_FP32',
@@ -24,9 +24,9 @@ CONTROLLED = ('SAVE_ROLLOUT_SNAPSHOTS', 'PHASE_COMPARE_ACTIONS', 'PHASE_SEPARATI
 
 
 def specifications(a):
-    tasks = a.tasks or (['open_microwave'] if a.stage in ('render', 'textcheck') else
-                       ['open_microwave', 'place_object_scale'])
-    seeds = a.seeds or ([0] if a.stage in ('render', 'textcheck') else [0, 1, 2])
+    tasks = a.tasks or (['place_object_scale'] if a.stage == 'render' else
+                       ['place_object_scale', 'place_bread_basket'])
+    seeds = a.seeds or ([0] if a.stage == 'render' else [0, 1, 2])
     specs = []
     for task in tasks:
         for seed in seeds:
@@ -35,8 +35,6 @@ def specifications(a):
                 variants = [(f'spp{s}_r{r}', 'icl', s, 'fixed', 'float32', r)
                             for r in range(a.repeats)
                             for s in ((32, 16, 8)[r % 3:] + (32, 16, 8)[:r % 3])]
-            elif a.stage == 'textcheck':
-                variants = [(m, m, 32, 'fixed', 'float32', 0) for m in ('icl', 'icl_legacy_text')]
             elif a.stage == 'baselines':
                 variants = [(m, m, a.spp, 'fixed', 'float32', 0) for m in ('text', 'icl')]
             elif a.stage == 'guidance':
@@ -48,10 +46,11 @@ def specifications(a):
             for label, mode, spp, selector, dtype, repeat in variants:
                 icl, text, guide = MODES[mode]
                 env = dict(ZERO_WAM_ROOT=str(ROOT), TASK=task, SEED=str(seed),
-                    ICL_SEED=str(seed), SAMPLING_SEED=str(10000 + seed),
-                    TEST_NUM=str(1 if a.stage in ('render', 'textcheck') else a.episodes),
-                    USE_ICL=str(icl), USE_TEXT=str(text), USE_GUIDANCE=str(guide),
-                    ICL_TEXT_SOURCE='cached' if mode=='icl_legacy_text' else 'target', TARGET_TEXT_SOURCE='empty' if mode=='icl_legacy_text' else 'instruction',
+                    ICL_SEED=str(seed), SAMPLING_SEED=str(a.sampling_seed),
+                    TEST_NUM=str(1 if a.stage == 'render' else a.episodes),
+                    USE_ICL=str(icl), USE_TEXT=str(int(bool(text or icl))), USE_GUIDANCE=str(guide),
+                    ICL_TEXT_SOURCE='cached' if icl else 'target', TARGET_TEXT_SOURCE='instruction' if text else 'empty',
+                    COMPACT_OBSERVATION_CACHE=str(int(a.compact_cache)),
                     ICL_GUIDANCE_SCALE='5', TEXT_GUIDANCE_SCALE='5' if mode=='text' else '1',
                     RENDER_SAMPLES_PER_PIXEL=str(spp), PROFILE_TIMING='1', PROFILE_SYNC_GPU='0',
                     PHASE_SEPARATION=str(int(getattr(a, 'phase_separation', False))), PHASE_OFFLOAD_TRANSFORMER='1', STAGE_REQUIRE_SUCCESS='0', MONITOR_GPU='1', TEXT_ENCODER_OFFLOAD='1', VIDEO_STATE_FP32='1',
@@ -69,8 +68,10 @@ def specifications(a):
 
 def parser():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('stage', choices=['render', 'baselines', 'guidance', 'precision', 'textcheck'])
-    p.add_argument('--tasks', nargs='+', choices=['open_microwave', 'place_object_scale'])
+    p.add_argument('stage', choices=['render', 'baselines', 'guidance', 'precision'])
+    p.add_argument('--tasks', nargs='+', choices=['place_object_scale', 'place_bread_basket'])
+    p.add_argument('--sampling-seed', type=int, default=1234)
+    p.add_argument('--compact-cache', action='store_true', help='Opt in after stage-00 validation')
     p.add_argument('--seeds', nargs='+', type=int)
     p.add_argument('--episodes', type=int, default=10)
     p.add_argument('--repeats', type=int, default=3)
@@ -96,8 +97,10 @@ def parser():
 
 def main():
     p = parser(); a = p.parse_args()
-    a.time = a.time or ('01:00:00' if a.stage in ('render', 'textcheck') else '03:00:00')
-    a.client_timeout = a.client_timeout or (2400 if a.stage in ('render', 'textcheck') else 9000)
+    a.time = a.time or ('01:00:00' if a.stage == 'render' else '03:00:00')
+    a.client_timeout = a.client_timeout or (2400 if a.stage == 'render' else 9000)
+    if a.sampling_seed < 0:
+        p.error('Sampling seed must be nonnegative')
     if min(a.episodes, a.repeats, a.window, a.client_timeout) < 1 or a.lookahead < 0:
         p.error('Invalid counts/window/frame settings')
     if a.fixed_frame != 'last':

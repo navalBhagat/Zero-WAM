@@ -122,8 +122,8 @@ def collect(manifest, runs_root):
                                             ('utilization.gpu [%]','gpu_mean_utilization',statistics.mean)]:
                 numbers=[]
                 for sample in samples:
-                    try: numbers.append(float(sample.get(column,'')))
-                    except (ValueError,TypeError): pass
+                    try: numbers.append(float(str(sample.get(column,'')).split()[0]))
+                    except (ValueError,TypeError,IndexError): pass
                 run[target]=operation(numbers) if numbers else None
         for marker, target in [('[inference-profile]', chunks), ('[external-guidance]', guidance)]:
             for i, entry in enumerate(log_records(folder/'server.log', marker)):

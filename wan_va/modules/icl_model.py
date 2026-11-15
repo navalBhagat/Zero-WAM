@@ -753,6 +753,12 @@ class WanICLTransformer3DModel(ModelMixin, ConfigMixin):
             return
         keep_icl = self.cache_type_ids_cache == ICL_CACHE_TYPE
         keep_obs = self.cache_type_ids_cache == OBSERVATION_CACHE_TYPE
+        if getattr(self, "compact_observation_cache", False):
+            # These keys cannot satisfy valid_pair (sequence=-1). Remove their
+            # actual K/V storage, preserving all real history and the ICL prefix.
+            padding = ((self.seq_ids_cache == -1) & (self.frame_ids_cache == -1)
+                       & (self.type_ids_cache == -1))
+            keep_obs = keep_obs & ~padding
         window = self.attn_window if attn_window is None else attn_window
         if window > 0 and keep_obs.any():
             next_frame_id = self.frame_ids_cache[keep_obs].max() + 1

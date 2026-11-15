@@ -131,6 +131,10 @@ class VA_Server:
                                             eval_mode=True,
                                             )
 
+        compact = os.environ.get("COMPACT_OBSERVATION_CACHE", "0")
+        if compact not in ("0", "1"):
+            raise ValueError("COMPACT_OBSERVATION_CACHE must be 0 or 1")
+        self.transformer.compact_observation_cache = compact == "1"
         self.env_type = job_config.env_type
         self.streaming_vae_half = None
         if self.env_type == 'robotwin_tshape':
@@ -1099,6 +1103,19 @@ class VA_Server:
         )
         self.chunk_idx += 1
         logger.info(f"[ICL] cache after observation: {self.transformer.cache_counts()}")
+        if getattr(self.transformer, "compact_observation_cache", False) or getattr(self, "phase_separation", False):
+            from .modules.phase_separation import cache_state
+            import json
+            types = self.transformer.cache_type_ids_cache
+            frames = self.transformer.frame_ids_cache
+            stats = dict(chunk=self.chunk_idx, valid_counts=self.transformer.cache_counts(),
+                         stored_entries=int(types.numel()),
+                         observation_padding=int(((types == OBSERVATION_CACHE_TYPE) & (frames == -1)).sum()),
+                         kv_and_metadata_bytes=cache_state(self.transformer)[1],
+                         allocated_bytes=torch.cuda.memory_allocated(self.device),
+                         reserved_bytes=torch.cuda.memory_reserved(self.device))
+            with open(os.path.join(self.save_root, "cache_memory.jsonl"), "a") as stream:
+                stream.write(json.dumps(stats) + "\n")
 
     def _reset(
         self,
@@ -1385,6 +1402,7 @@ class VA_Server:
             reference_paths=dict(video=resolved(request.get("icl_video_path")),
                                  latent=resolved(request.get("icl_latent_path"))),
             model_path=resolved(self.job_config.model_path),
+            compact_observation_cache=getattr(getattr(self, "transformer", None), "compact_observation_cache", False),
             phase_separation=getattr(self, "phase_separation", False),
             phase_offload_transformer=getattr(self, "phase_offload_transformer", False),
             transformer_dtype=str(self.dtype),
