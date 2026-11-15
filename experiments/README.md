@@ -88,6 +88,44 @@ Use `--cup-only` for only the two cup jobs. The full test has an approximate
 transfer/runtime costs vary. Blocked jobs consume no GPU runtime; cancel them by
 recorded job ID if a prerequisite fails. Do not submit duplicate batches.
 
+### Three task diagnostics before phase 1
+
+The completed cup controls need not be repeated. Submit one episode each of
+`open_microwave`, `place_object_scale`, and `place_bread_basket`:
+
+```bash
+python3 experiments/scripts/run_stage00.py --diagnostics --submit
+```
+
+Outputs go to `experiments/stages/00_task_diagnostics/`. All three use model seed
+1234, simulator seed 100000 (run seed 0), demo seed 0, 32 SPP, original ICL captions,
+FP32 video state, observation offload and padding compaction. Each requests one A100,
+18 CPU cores and one hour; the client timeout is 50 minutes after startup.
+Planning allowance is 128 SBUs total (60 minutes); the wall-limit ceiling is 384 SBUs.
+Jobs use `afterany` to avoid concurrent shared Robotwin writes while allowing the
+scale and bread tests to proceed if microwave OOMs. No phase 1 jobs launch automatically.
+
+The client stops on Robotwin's existing `eval_success` after each action, captures
+the final observation, and skips terminal cache updates. It never substitutes the
+raw task predicate for Robotwin's success flag. The next episode resets the server.
+Stopping policy is recorded in episode metadata; earlier timing results may include
+extra terminal cache work.
+
+Microwave instrumentation is opt-in via `TASK_DIAGNOSTICS=microwave`, implemented
+in `evaluation/robotwin/task_diagnostics.py` with a factory and one record hook in
+the client. Other tasks receive no diagnostic object. The per-episode JSONL under
+`runs/open_microwave_<jobid>/diagnostics/` records post-action door angles, upper
+limits, the existing 60% threshold, raw task success and latched evaluator success.
+These samples do not record every internal physics step. This does not fix long-history OOM.
+
+```bash
+python3 experiments/analysis/analyze_stage00.py experiments/stages/00_task_diagnostics/manifest.json
+```
+
+The shared analyzer writes memory/timing reports, `microwave_door.csv`, and
+`microwave_door.png` (when angle logs exist). Review task outcomes and OOMs before
+starting phase 1; a completed unsuccessful task is distinct from infrastructure failure.
+
 ### What changes in memory
 
 `COMPACT_OBSERVATION_CACHE=1` discards only observation entries whose sequence,

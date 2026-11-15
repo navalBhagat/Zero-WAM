@@ -675,6 +675,7 @@ def eval_policy(task_name,
             simulator_seed=int(now_seed), icl_seed=int(args["icl_seed"]),
             episode_offset=int(args.get("episode_offset", 0)),
             task_instruction=str(prompt), rendering=render_settings(),
+            stopping_policy="robotwin_eval_success_after_each_action_skip_terminal_cache",
             requested_conditioning=dict(use_icl=args["use_icl"], use_text=args["use_text"],
                                         use_guidance=args["use_guidance"]),
             selected_reference=dict(video=icl_video_path or None, latent=icl_latent_path or None),
@@ -719,6 +720,9 @@ def eval_policy(task_name,
             Path(args['save_root']) / 'snapshots' / f'episode_{now_id:03d}',
             enabled=os.environ.get("SAVE_ROLLOUT_SNAPSHOTS", "0") == "1")
         snapshots.write(initial_formatted_obs, -1, TASK_ENV.take_action_cnt, TASK_ENV.eval_success)
+        # Optional task-specific instrumentation lives outside the rollout loop.
+        from evaluation.robotwin.task_diagnostics import make_task_diagnostic
+        task_diagnostic = make_task_diagnostic(task_name, Path(args['save_root']), now_id)
         rollout_chunk = 0
         first_obs = None
         while TASK_ENV.take_action_cnt<TASK_ENV.step_lim:
@@ -766,22 +770,28 @@ def eval_policy(task_name,
                     else:
                         raise NotImplementedError
                     TASK_ENV.take_action(ee_action, action_type='ee')
+                    if task_diagnostic is not None:
+                        task_diagnostic.record(TASK_ENV, rollout_chunk)
                    
-                    if (j+1) % action_per_frame == 0:
+                    if (j+1) % action_per_frame == 0 or TASK_ENV.eval_success:
                         obs = format_obs(TASK_ENV.get_obs(), prompt)
                         full_obs_list.append(obs)
                         key_frame_list.append(obs)
-                    
+                    if TASK_ENV.eval_success:
+                        break
+                if TASK_ENV.eval_success:
+                    break
+
             first = False
             if key_frame_list:
                 snapshots.write(key_frame_list[-1], rollout_chunk, TASK_ENV.take_action_cnt, TASK_ENV.eval_success)
             rollout_chunk += 1
 
-            model.infer(dict(obs = key_frame_list, compute_kv_cache=True, imagine=False, save_visualization=save_visualization, state=action))
-  
+            # A terminal partial chunk is never sent as a complete cache update.
             if TASK_ENV.eval_success:
                 succ = True
                 break
+            model.infer(dict(obs = key_frame_list, compute_kv_cache=True, imagine=False, save_visualization=save_visualization, state=action))
       
 
         vis_dir = Path(args['save_root']) / f'stseed-{st_seed}' / 'visualization' / task_name
