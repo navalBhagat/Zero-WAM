@@ -193,8 +193,34 @@ checkpoint is used; these are inference conditions, not separately trained model
 Actual conditioning and accepted scene/demo references are recorded per episode.
 The model RNG restarts at the same sampling seed each episode.
 
-Ten episodes per seed produces 120 baseline episodes. Pilot and expanded runs overlap;
-report the expanded set, not both as independent samples. Pair on actual simulator,
+Ten episodes per seed group produces 120 baseline episodes. Use `--resume-from`
+to extend the completed pilot without repeating its episodes:
+
+```bash
+python3 experiments/scripts/robotwin_suite.py baselines \
+  --tasks place_object_scale place_bread_basket \
+  --seeds 0 1 2 --episodes 10 --spp 8 \
+  --phase-separation --compact-cache \
+  --time 03:00:00 --client-timeout 10000 \
+  --resume-from experiments/stages/02_baseline_pilot/manifest.json \
+  --manifest experiments/stages/02_baselines/manifest.json
+```
+
+This previews 12 new jobs / 112 new episodes if all eight pilot episodes completed.
+Add `--submit` only after choosing runtime/budget limits from the pilot. Three hours
+is illustrative, not a measured guarantee for text-only failures. `--episodes 10`
+means the desired total including reused episodes. Completed failures count too;
+OOM/interrupted episodes are not complete. A finished contiguous episode prefix is
+required. The continuation preserves demo episode indices and starts after the last
+accepted simulator seed, including feasibility skips. Policy settings must match;
+changed model/runtime code rejects reuse. Keep the same checkpoint, external Robotwin
+checkout and data; these external assets are not content-hashed by the resume check.
+Old run directories and source bundles must remain accessible at their recorded paths.
+The new manifest references the old results so analysis combines old and new episodes.
+Do not analyze both manifests and sum their counts. This is explicit baseline resume,
+not automatic scanning of every result directory. To extend again, resume from the
+latest combined manifest.
+ Pair on actual simulator,
 sampling and demo seeds, not just nominal group numbers.
 
 ## 03 — temporal guidance

@@ -1,5 +1,8 @@
 """Ordered Snellius experiments. Dry-run by default; never submits later stages."""
 import argparse
+import copy
+import hashlib
+import zipfile
 import json
 import os
 from pathlib import Path
@@ -15,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[2]
 MODES = {'text': (0, 1, 0), 'icl': (1, 0, 0), 'guidance': (0, 0, 1),
          'icl_guidance': (1, 0, 1)}
 # Do not let an earlier interactive experiment silently contaminate a new stage.
-CONTROLLED = ('COMPACT_OBSERVATION_CACHE', 'SAVE_ROLLOUT_SNAPSHOTS', 'PHASE_COMPARE_ACTIONS', 'PHASE_SEPARATION', 'PHASE_OFFLOAD_TRANSFORMER', 'STAGE_REQUIRE_SUCCESS', 'GUIDANCE_CAPTURE', 'GUIDANCE_SELECTION', 'GUIDANCE_REFERENCE_FRAMES',
+CONTROLLED = ('START_SEED', 'EPISODE_OFFSET', 'COMPACT_OBSERVATION_CACHE', 'SAVE_ROLLOUT_SNAPSHOTS', 'PHASE_COMPARE_ACTIONS', 'PHASE_SEPARATION', 'PHASE_OFFLOAD_TRANSFORMER', 'STAGE_REQUIRE_SUCCESS', 'GUIDANCE_CAPTURE', 'GUIDANCE_SELECTION', 'GUIDANCE_REFERENCE_FRAMES',
               'GUIDANCE_MATCH_WINDOW', 'GUIDANCE_LOOKAHEAD', 'GUIDANCE_STRENGTH',
               'GUIDANCE_EVERY', 'GUIDANCE_MAX_NORM', 'GUIDANCE_REFERENCE_SOURCE',
               'GUIDANCE_DECODER_DTYPE', 'GUIDANCE_STATE_DTYPE', 'VIDEO_STATE_FP32',
@@ -66,6 +69,76 @@ def specifications(a):
     return specs
 
 
+def extend_baselines(specs, previous_path, root):
+    previous_path = previous_path.resolve()
+    previous = json.loads(previous_path.read_text())
+    if previous['stage'] != 'baselines':
+        raise ValueError('--resume-from requires a baseline manifest')
+    # Timing/output controls may change; policy, rendering and seed settings may not.
+    ignored = {'TEST_NUM', 'CLIENT_TIMEOUT', 'EXPERIMENT_OUTPUT_ROOT',
+               'EXPERIMENT_SOURCE_DIGEST', 'EXPERIMENT_LABEL', 'EXPERIMENT_STAGE',
+               'EXPERIMENT_REPEAT', 'START_SEED', 'EPISODE_OFFSET', 'ZERO_WAM_ROOT'}
+    reused, pending = [], []
+    for spec in specs:
+        env = spec['environment']
+        target = int(env['TEST_NUM'])
+        completed = {}
+        sources = []
+        for old in previous['runs']:
+            if (old['task'], old['seed'], old['mode']) != (spec['task'], spec['seed'], spec['mode']):
+                continue
+            if any(old['environment'].get(k) != v for k, v in env.items() if k not in ignored):
+                continue
+            if not old.get('job_id'):
+                continue
+            folder = Path(old['environment']['EXPERIMENT_OUTPUT_ROOT']) / f'{old["task"]}_{old["job_id"]}'
+            config_path = folder / 'config.json'
+            if not config_path.exists():
+                raise ValueError(f'Missing prior results: {config_path}; resume on the machine holding the results')
+            config = json.loads(config_path.read_text())
+            episodes = [e for e in config.get('episodes', []) if e.get('status') == 'completed']
+            if not episodes:
+                continue
+            if not (folder / 'job_timing.json').exists():
+                raise ValueError(f'Prior job may still be active: {folder}; wait for it to finish')
+            # A source archive is retained for every referenced segment, including extensions.
+            bundle = Path(old.get('resume_source_bundle') or previous['source_bundle'])
+            with zipfile.ZipFile(bundle) as archive:
+                hashes = json.loads(archive.read('source_hashes.json'))
+            for name, expected in hashes.items():
+                if not (name.startswith('wan_va/') or name == 'evaluation/robotwin/eval_policy_client_openpi.py'):
+                    continue
+                path = root / name
+                if not path.exists() or hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+                    raise ValueError(f'Runtime changed since prior results: {name}; use a fresh campaign')
+            for episode in episodes:
+                index = int(episode['episode_id'])
+                if index in completed:
+                    raise ValueError(f'Duplicate completed episode {index} for {spec["task"]}/{spec["mode"]}')
+                completed[index] = episode
+            item = copy.deepcopy(old)
+            item['resume_source_bundle'] = str(bundle)
+            sources.append(item)
+        prefix = 0
+        while prefix in completed:
+            prefix += 1
+        if len(completed) != prefix:
+            raise ValueError('Prior completed episodes have gaps; automatic resume requires a contiguous prefix')
+        if prefix > target:
+            raise ValueError('--episodes is the desired total and is smaller than the completed prefix')
+        reused.extend(sources)
+        if prefix == target:
+            continue
+        if prefix:
+            env['EPISODE_OFFSET'] = str(prefix)
+            # Feasibility checks may have skipped seeds; do not assume start + episode count.
+            env['START_SEED'] = str(int(completed[prefix - 1]['simulator_seed']) + 1)
+            env['TEST_NUM'] = str(target - prefix)
+            spec['resumed_completed_episodes'] = prefix
+        pending.append(spec)
+    return pending, reused
+
+
 def parser():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('stage', choices=['render', 'baselines', 'guidance', 'precision'])
@@ -73,7 +146,8 @@ def parser():
     p.add_argument('--sampling-seed', type=int, default=1234)
     p.add_argument('--compact-cache', action='store_true', help='Opt in after stage-00 validation')
     p.add_argument('--seeds', nargs='+', type=int)
-    p.add_argument('--episodes', type=int, default=10)
+    p.add_argument('--episodes', type=int, default=10, help='Desired total per task/mode/seed, including reused episodes')
+    p.add_argument('--resume-from', type=Path, help='Reuse completed baseline episodes from this prior manifest')
     p.add_argument('--repeats', type=int, default=1)
     p.add_argument('--spp', type=int, choices=[8, 16, 32], default=32)
     p.add_argument('--window', type=int, default=24)
@@ -115,6 +189,18 @@ def main():
     if not a.job_script.is_file():
         p.error(f'Job script missing: {a.job_script}')
     specs = specifications(a)
+    reused = []
+    if a.resume_from:
+        if a.stage != 'baselines':
+            p.error('--resume-from currently supports baselines only')
+        try:
+            specs, reused = extend_baselines(specs, a.resume_from, ROOT)
+        except (ValueError, OSError, KeyError) as error:
+            p.error(str(error))
+        print(f'Reusing {len(reused)} prior run segments; only remaining episodes will be submitted.')
+        if not specs:
+            print('All requested episodes are already complete; nothing submitted.')
+            return
     count = sum(int(r['environment']['TEST_NUM']) for r in specs)
     estimated = (count*a.minutes_per_episode + len(specs)*a.startup_minutes)/60*a.sbu_per_hour
     try:
@@ -128,7 +214,8 @@ def main():
     if max(int(s['environment']['TEST_NUM']) for s in specs)*a.minutes_per_episode+a.startup_minutes > wall_hours*60:
         p.error('Estimated per-job runtime exceeds --time; reduce episodes or increase the limit')
     reservation_ceiling = len(specs)*wall_hours*a.sbu_per_hour
-    manifest = dict(schema_version=1, stage=a.stage, submitted=a.submit, runs=specs,
+    manifest = dict(schema_version=1, stage=a.stage, submitted=a.submit, runs=reused + specs,
+                    resume_from=str(a.resume_from.resolve()) if a.resume_from else None,
                     estimate=dict(episodes=count, sbu=estimated, budget_sbu=a.budget_sbu,
                                   sbu_per_hour=a.sbu_per_hour, startup_minutes=a.startup_minutes,
                                   requested_walltime_sbu_ceiling=reservation_ceiling,

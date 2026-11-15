@@ -21,6 +21,11 @@ fi
 export PYTHONPATH="${ZERO_WAM_ROOT}:${ROBOTWIN_ROOT}:${PYTHONPATH:-}"
 cd "${ROBOTWIN_ROOT}"
 
+continuation_args=(--episode_offset "${EPISODE_OFFSET:-0}")
+if [[ -n "${START_SEED:-}" ]]; then
+    continuation_args+=(--start_seed "$START_SEED")
+fi
+
 exec env PYTHONWARNINGS=ignore::UserWarning XLA_PYTHON_CLIENT_MEM_FRACTION=0.9 \
 python -m evaluation.robotwin.eval_policy_client_openpi \
     --config "${ROBOTWIN_ROOT}/policy/ACT/deploy_policy.yml" \
@@ -39,6 +44,7 @@ python -m evaluation.robotwin.eval_policy_client_openpi \
     --icl_latent_root "${ICL_LATENT_ROOT}" \
     --icl_seed "${ICL_SEED:-${seed}}" \
     --test_num "${TEST_NUM}" \
+    "${continuation_args[@]}" \
     --overrides \
     --task_name "${task_name}" \
     --task_config demo_clean \
