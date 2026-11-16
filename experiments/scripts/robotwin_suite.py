@@ -42,7 +42,7 @@ def specifications(a):
                 variants = [(m, m, a.spp, 'fixed', 'float32', 0) for m in ('text', 'icl')]
             elif a.stage == 'guidance':
                 variants = [(f'{m}_{sel}', m, a.spp, sel, 'float32', 0)
-                            for m in ('guidance', 'icl_guidance') for sel in ('fixed', 'window')]
+                            for m in (a.guidance_modes or ['guidance', 'icl_guidance']) for sel in ('fixed', 'window')]
             else:
                 variants = [(f'{m}_{dtype}', m, a.spp, 'window', dtype, 0)
                             for m in ('guidance', 'icl_guidance') for dtype in ('float32', 'float16')]
@@ -182,6 +182,8 @@ def parser():
     p.add_argument('stage', choices=['render', 'baselines', 'guidance', 'precision'])
     p.add_argument('--tasks', nargs='+', choices=['place_object_scale', 'place_bread_basket'])
     p.add_argument('--sampling-seed', type=int, default=1234)
+    p.add_argument('--guidance-modes', nargs='+', choices=['guidance', 'icl_guidance'],
+                   help='Guidance-stage conditions; defaults to both')
     p.add_argument('--compact-cache', action='store_true', help='Opt in after stage-00 validation')
     p.add_argument('--seeds', nargs='+', type=int)
     p.add_argument('--episodes', type=int, default=10, help='Desired total per task/mode/seed, including reused episodes')
