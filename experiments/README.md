@@ -317,11 +317,14 @@ success-rate improvement from these smoke tests.
 
 The original baselines and guidance pilot use a fixed task-to-video map.
 `--demonstration-retrieval caption` instead scans local `generated_video*.pth`
-files without loading their latent tensors. It ranks task-domain candidates by
+files, reading cached metadata on CPU with `weights_only=True` and memory mapping
+when supported; no GPU model or video decoding is involved. It ranks task-domain candidates by
 BM25 overlap with the scene instruction (including simple word aliases), preferring
 matching explicit one/two-object descriptions for bread using its actual scene count.
-Caption text comes from sibling `metadata.json`, `caption.json` or `prompt.json`
-when available; otherwise the sample directory's description is used and labeled.
+Caption text comes first from the `.pth` fields `text`, `local_instruction`, then
+`task`. Sibling JSON captions and directory descriptions are fallbacks. Provenance
+is recorded. Short-caption bread counts distinguish objects from mentions of two
+human arms; uncertain object counts remain unknown.
 This is deterministic **text retrieval, not a learned semantic/video verifier**.
 It cannot detect a generated video contradicting its caption, and cannot choose a
 better example if only one relevant candidate is installed. Check candidate counts

@@ -1,7 +1,7 @@
 """Deterministic caption retrieval over local HumanGen latent files (CPU only).
 
-BM25 ranks caption/description text; it does not verify video semantics. No latent
-pickle or model is loaded during indexing. The audit records metadata provenance.
+BM25 ranks caption/description text; it does not verify video semantics. Cached
+metadata is read on CPU with weights_only=True; no decoding or GPU model is used.
 """
 import json
 import math
@@ -21,7 +21,18 @@ def tokens(text):
 
 
 def description(path):
-    # Prefer explicit caption metadata. Filename descriptions are labeled fallbacks.
+    # HumanGen stores its real caption inside the latent file, not its folder name.
+    import torch
+    try:
+        item = torch.load(path, map_location='cpu', weights_only=True, mmap=True)
+    except RuntimeError as error:
+        if 'mmap' not in str(error).lower():
+            raise
+        item = torch.load(path, map_location='cpu', weights_only=True)
+    if isinstance(item, dict):
+        for key in ('text', 'local_instruction', 'task'):
+            if isinstance(item.get(key), str) and item[key].strip():
+                return item[key], f'{path}:{key}'
     for name in ('metadata.json', 'caption.json', 'prompt.json'):
         sidecar = path.parent / name
         if sidecar.is_file():
@@ -35,6 +46,18 @@ def description(path):
     return re.sub(r'^\d+_robotwin_', '', path.parent.name).replace('_', ' '), 'sample_directory_description'
 
 
+def bread_count(caption):
+    """Conservative short-caption object count; arm/hand counts are not object counts."""
+    text = caption.lower()
+    if re.search(r'\b(two|both)\s+(?:[\w-]+\s+){0,3}(breads|loaves)\b', text):
+        return 2
+    if re.search(r'\b(bread|loaf)\b[^.!?]*\band\s+(a|an)\s+(?:[\w-]+\s+){0,3}(bread|loaf)\b', text):
+        return 2
+    if re.search(r'\b(one|single|a|an)\s+(?:[\w-]+\s+){0,3}(bread|loaf)\b', text):
+        return 1
+    return None
+
+
 class DemonstrationRetriever:
     def __init__(self, latent_root):
         self.root = Path(latent_root)
@@ -44,7 +67,9 @@ class DemonstrationRetriever:
             words = tokens(caption)
             if words:
                 self.items.append(dict(latent=str(path.resolve()), caption=caption,
-                                       caption_source=source, words=words))
+                                       caption_source=source, words=words,
+                                       domain_words=set(tokens(path.parent.name)) | set(words),
+                                       caption_object_count=bread_count(caption)))
         if not self.items:
             raise ValueError(f'No generated_video*.pth demonstrations found in {self.root}')
 
@@ -53,7 +78,7 @@ class DemonstrationRetriever:
         anchors = {'place_object_scale': {'scale'}, 'place_bread_basket': {'bread'}}
         if task not in anchors:
             raise ValueError(f'Automatic retrieval is not configured for task {task}')
-        candidates = [i for i in self.items if anchors[task] & set(i['words'])]
+        candidates = [i for i in self.items if anchors[task] & i['domain_words']]
         if not candidates:
             raise ValueError(f'No caption candidates for {task}; inspect the local HumanGen inventory')
         query = set(tokens(instruction))
@@ -70,17 +95,15 @@ class DemonstrationRetriever:
                 n = counts[word]
                 idf = math.log(1 + (len(documents) - frequency[word] + .5) / (frequency[word] + .5))
                 score += idf * n * 2.5 / (n + 1.5 * (.25 + .75 * sum(counts.values()) / average))
-            # Prefer explicitly compatible object count when captions specify it.
-            if 'two' in query and 'one' in counts and 'two' not in counts:
-                score -= 2.
-            if 'one' in query and 'two' in counts and 'one' not in counts:
+            desired_count = object_count if object_count in (1, 2) else bread_count(instruction)
+            if task == 'place_bread_basket' and desired_count and item['caption_object_count'] and item['caption_object_count'] != desired_count:
                 score -= 2.
             scores.append((score, item))
         ranked = sorted(scores, key=lambda pair: (-pair[0], pair[1]['latent']))
         score, selected = ranked[0]
         def audit(pair):
             value, item = pair
-            return {k: item[k] for k in ('latent', 'caption', 'caption_source')} | {'score': value}
+            return {k: item[k] for k in ('latent', 'caption', 'caption_source', 'caption_object_count')} | {'score': value}
         record = dict(method='bm25_caption', task=task, query=instruction,
                       scene_object_count=object_count,
                       candidate_count=len(candidates), indexed_count=len(self.items),
