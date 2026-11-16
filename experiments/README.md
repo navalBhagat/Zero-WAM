@@ -173,6 +173,23 @@ whole-job/client timing includes more setup. Sum exclusive durations, not overla
 inclusive durations. Camera readback can include GPU waits. Missing runs and
 unavailable simulator hooks are reported; missing memory samples are not zero usage.
 
+### Parallel jobs
+
+Pass `--parallel` to `robotwin_suite.py` to submit independent jobs with no Slurm
+dependencies. Without it, jobs remain chained with `afterany`. Each job requests
+one GPU and 18 CPU cores; Slurm may run several on separate allocated GPUs subject
+to availability and account limits. Separate baseline/guidance submissions have no
+cross-campaign dependency. Parallelism changes elapsed completion time, not planned
+aggregate GPU-hours; reservations can be larger than elapsed-time charges.
+
+Scale/bread jobs no longer patch shared Robotwin source. For other tasks, only the
+relevant released override is copied, under a lock, and only when contents differ.
+Auxiliary `_result.txt` and optional simulator videos now live under each run's
+`eval_result/`, alongside its other job-local outputs. Code changes while jobs are
+queued/running remain unsafe: source verification rejects changed queued jobs.
+This audits our launcher/client writes; external simulator/planner internals have
+not been tested concurrently on Snellius. Start with a small concurrent batch.
+
 ## 02 — baselines
 
 Both tasks default on this stage. Start with a pilot, then expand based on measured
@@ -213,7 +230,8 @@ means the desired total including reused episodes. Completed failures count too;
 OOM/interrupted episodes are not complete. A finished contiguous episode prefix is
 required. The continuation preserves demo episode indices and starts after the last
 accepted simulator seed, including feasibility skips. Policy settings must match;
-changed model/runtime code rejects reuse. Keep the same checkpoint, external Robotwin
+changed model/runtime code rejects reuse except the exact restoration of the authors' expert-exception skip handler and relocation of auxiliary outputs into the job folder. This exception is recorded as
+`resume_accepted_runtime_changes` in the reused run entries. Keep the same checkpoint, external Robotwin
 checkout and data; these external assets are not content-hashed by the resume check.
 Old run directories and source bundles must remain accessible at their recorded paths.
 The new manifest references the old results so analysis combines old and new episodes.

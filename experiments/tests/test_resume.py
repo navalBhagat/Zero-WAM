@@ -51,3 +51,30 @@ def test_extend_pilot_preserves_scene_and_demo_offsets_and_analysis(tmp_path):
     a.spp = 8
     with pytest.raises(ValueError, match='gaps'):
         extend_baselines(specifications(a), manifest, ROOT)
+
+
+def test_resume_allows_only_exact_scene_skip_change():
+    import subprocess
+    from experiments.scripts.robotwin_suite import compatible_client_changes
+    old = subprocess.check_output(['git', 'show', '7085191:evaluation/robotwin/eval_policy_client_openpi.py'], text=True)
+    # Locate the historical handler in the current client without relying on surrounding edits.
+    current = (ROOT/'evaluation/robotwin/eval_policy_client_openpi.py').read_text()
+    start = current.index('            except Exception as e:', current.index('while succ_seed < test_num:'))
+    end = current.index('\n        if (not expert_check)', start)
+    new_handler = current[start:end].rstrip() + '\n'
+    old_start = old.index('            except Exception as e:', old.index('while succ_seed < test_num:'))
+    old_end = old.index('\n        if (not expert_check)', old_start)
+    old_handler = old[old_start:old_end].rstrip() + '\n'
+    before = 'unchanged prefix\n' + old_handler + 'unchanged suffix\n'
+    after = 'unchanged prefix\n' + new_handler + 'unchanged suffix\n'
+    assert compatible_client_changes(before, after)
+    assert not compatible_client_changes(before, after.replace('unchanged suffix', 'changed policy'))
+    assert not compatible_client_changes(before, after.replace('now_seed += 1', 'now_seed += 2'))
+
+
+def test_resume_allows_exact_output_relocation_but_not_extra_edits():
+    from experiments.scripts.robotwin_suite import compatible_client_changes
+    before = '    save_dir = Path(f"eval_result/{task_name}/{policy_name}/{task_config}/{ckpt_setting}/{current_time}")'
+    after = "    save_dir = Path(save_root).resolve() / 'eval_result' / task_name / policy_name / task_config / str(ckpt_setting) / current_time"
+    assert compatible_client_changes(before, after) == ['job_local_auxiliary_outputs']
+    assert not compatible_client_changes(before, after + '\nchanged_inference()')

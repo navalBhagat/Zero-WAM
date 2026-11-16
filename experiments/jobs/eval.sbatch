@@ -53,7 +53,8 @@ case "$MONITOR_GPU" in
 esac
 # Keep only the text encoder on CPU; VAE and transformer remain on GPU.
 export TEXT_ENCODER_OFFLOAD="${TEXT_ENCODER_OFFLOAD:-1}"
-export PORT=$((20000 + SLURM_JOB_ID % 20000))
+# Reserve adjacent pairs: consecutive jobs must not overlap server/rendezvous ports.
+export PORT=$((20000 + 2 * (SLURM_JOB_ID % 10000)))
 export MASTER_PORT=$((PORT + 1))
 export PYTHONUNBUFFERED=1
 export ZERO_WAM_DIAGNOSTICS=1
@@ -124,11 +125,19 @@ if [[ "$MONITOR_GPU" == "1" ]]; then
 fi
 
 
-# Match the released evaluation criteria, preserving the upstream originals.
-for task_file in move_stapler_pad stamp_seal; do
-    cp -n "$ROBOTWIN_ROOT/envs/$task_file.py" "$ROBOTWIN_ROOT/envs/$task_file.py.upstream"
-    cp "evaluation/robotwin/envs/$task_file.py" "$ROBOTWIN_ROOT/envs/$task_file.py"
-done
+# These released task overrides are irrelevant to scale/bread evaluations.
+# Serialize patching when explicitly evaluating one of the overridden tasks.
+case "$TASK" in
+    move_stapler_pad|stamp_seal)
+        (
+            flock -x 9
+            cp -n "$ROBOTWIN_ROOT/envs/$TASK.py" "$ROBOTWIN_ROOT/envs/$TASK.py.upstream"
+            if ! cmp -s "evaluation/robotwin/envs/$TASK.py" "$ROBOTWIN_ROOT/envs/$TASK.py"; then
+                cp "evaluation/robotwin/envs/$TASK.py" "$ROBOTWIN_ROOT/envs/$TASK.py"
+            fi
+        ) 9>"$ROBOTWIN_ROOT/.zerowam-task-patches.lock"
+        ;;
+esac
 
 # Fail early on client imports/render initialization, before loading the WAM.
 source activate robotwin

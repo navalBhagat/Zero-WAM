@@ -2,6 +2,7 @@
 import json
 from pathlib import Path
 import sys
+import pytest
 
 ROOT=Path(__file__).resolve().parents[2]
 sys.path.insert(0,str(ROOT))
@@ -58,7 +59,8 @@ def test_missing_runs_and_real_seed_pairing(tmp_path):
     assert runs[0]['gpu_peak_used_mib']==34295 and runs[0]['gpu_mean_utilization']==60
 
 
-def test_submission_is_serial_and_scrubs_inherited_controls(tmp_path, monkeypatch):
+@pytest.mark.parametrize('parallel', [False, True])
+def test_submission_dependencies_and_inherited_controls(tmp_path, monkeypatch, parallel):
     import experiments.scripts.robotwin_suite as suite
     real=suite.subprocess.check_output; calls=[]
     def check(cmd, **kwargs):
@@ -68,12 +70,15 @@ def test_submission_is_serial_and_scrubs_inherited_controls(tmp_path, monkeypatc
     monkeypatch.setattr(suite.subprocess,'check_output',check)
     monkeypatch.setenv('GUIDANCE_CAPTURE','/must/not/leak.pt')
     manifest=tmp_path/'campaign/manifest.json'
-    monkeypatch.setattr(sys,'argv',['suite','render','--manifest',str(manifest),'--submit'])
+    monkeypatch.setattr(sys,'argv',['suite','render','--manifest',str(manifest),'--submit'] + (['--parallel'] if parallel else []))
     suite.main()
     data=json.loads(manifest.read_text())
     assert len(calls)==3 and all(s['status']=='submitted' for s in data['runs'])
     assert not any(c.startswith('--dependency') for c in calls[0][0])
-    assert '--dependency=afterany:101' in calls[1][0]
+    if parallel:
+        assert all(not any(c.startswith('--dependency') for c in cmd) for cmd, _ in calls)
+    else:
+        assert '--dependency=afterany:101' in calls[1][0]
     assert all('GUIDANCE_CAPTURE' not in env for _,env in calls)
     assert Path(data['source_bundle']).is_file()
 
@@ -85,3 +90,17 @@ def test_sacct_uses_gpu_count_once_and_keeps_missing_accounting():
         '2|FAILED|60|cpu=18|1:0\n',128)
     assert rows[0]['estimated_sbu']==128/6
     assert rows[1]['estimated_sbu'] is None
+
+
+def test_consecutive_jobs_use_disjoint_server_and_rendezvous_ports():
+    import subprocess
+    script=(ROOT/'experiments/jobs/eval.sbatch').read_text()
+    assignments='\n'.join(line for line in script.splitlines()
+                          if line.startswith(('export PORT=', 'export MASTER_PORT=')))
+    used=set()
+    for job in range(29286680,29286690):
+        result=subprocess.check_output(['bash','-c',f'SLURM_JOB_ID={job}\n'+assignments+
+                                        '\nprintf "%s %s" "$PORT" "$MASTER_PORT"'],text=True)
+        pair={int(v) for v in result.split()}
+        assert len(pair)==2 and not pair & used
+        used.update(pair)

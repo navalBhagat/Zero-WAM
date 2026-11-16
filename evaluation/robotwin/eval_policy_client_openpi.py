@@ -460,7 +460,7 @@ def main(usr_args):
     else:
         embodiment_name = str(embodiment_type[0]) + "+" + str(embodiment_type[1])
 
-    save_dir = Path(f"eval_result/{task_name}/{policy_name}/{task_config}/{ckpt_setting}/{current_time}")
+    save_dir = Path(save_root).resolve() / 'eval_result' / task_name / policy_name / task_config / str(ckpt_setting) / current_time
     save_dir.mkdir(parents=True, exist_ok=True)
 
     if args["eval_video_log"]:
@@ -591,11 +591,12 @@ def eval_policy(task_name,
                 args["render_freq"] = render_freq
                 continue
             except Exception as e:
+                TASK_ENV.close_env()
+                now_seed += 1
                 args["render_freq"] = render_freq
-                raise RuntimeError(
-                    f"Expert setup failed for {task_name}, seed {now_seed}; "
-                    "stopping instead of retrying a potentially broken environment."
-                ) from e
+                print(f"error occurs ! {e}")
+                traceback.print_exc()
+                continue
 
         if (not expert_check) or (TASK_ENV.plan_success and TASK_ENV.check_success()):
             succ_seed += 1

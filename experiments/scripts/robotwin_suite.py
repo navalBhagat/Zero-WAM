@@ -69,6 +69,35 @@ def specifications(a):
     return specs
 
 
+def compatible_client_changes(previous, current):
+    """Allow only the documented exception handler and output relocation edits."""
+    before = '''            except Exception as e:
+                args["render_freq"] = render_freq
+                raise RuntimeError(
+                    f"Expert setup failed for {task_name}, seed {now_seed}; "
+                    "stopping instead of retrying a potentially broken environment."
+                ) from e
+'''
+    after = '''            except Exception as e:
+                TASK_ENV.close_env()
+                now_seed += 1
+                args["render_freq"] = render_freq
+                print(f"error occurs ! {e}")
+                traceback.print_exc()
+                continue
+'''
+    changes = []
+    if previous.count(before) == 1:
+        previous = previous.replace(before, after, 1)
+        changes.append('restored_author_expert_scene_skipping')
+    old_output = '    save_dir = Path(f"eval_result/{task_name}/{policy_name}/{task_config}/{ckpt_setting}/{current_time}")'
+    new_output = "    save_dir = Path(save_root).resolve() / 'eval_result' / task_name / policy_name / task_config / str(ckpt_setting) / current_time"
+    if previous.count(old_output) == 1:
+        previous = previous.replace(old_output, new_output, 1)
+        changes.append('job_local_auxiliary_outputs')
+    return changes if previous == current else []
+
+
 def extend_baselines(specs, previous_path, root):
     previous_path = previous_path.resolve()
     previous = json.loads(previous_path.read_text())
@@ -105,11 +134,18 @@ def extend_baselines(specs, previous_path, root):
             bundle = Path(old.get('resume_source_bundle') or previous['source_bundle'])
             with zipfile.ZipFile(bundle) as archive:
                 hashes = json.loads(archive.read('source_hashes.json'))
+                old_client = archive.read('evaluation/robotwin/eval_policy_client_openpi.py').decode()
+            accepted_changes = []
             for name, expected in hashes.items():
                 if not (name.startswith('wan_va/') or name == 'evaluation/robotwin/eval_policy_client_openpi.py'):
                     continue
                 path = root / name
                 if not path.exists() or hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+                    changes = (compatible_client_changes(old_client, path.read_text())
+                               if name == 'evaluation/robotwin/eval_policy_client_openpi.py' and path.exists() else [])
+                    if changes:
+                        accepted_changes.extend(changes)
+                        continue
                     raise ValueError(f'Runtime changed since prior results: {name}; use a fresh campaign')
             for episode in episodes:
                 index = int(episode['episode_id'])
@@ -118,6 +154,8 @@ def extend_baselines(specs, previous_path, root):
                 completed[index] = episode
             item = copy.deepcopy(old)
             item['resume_source_bundle'] = str(bundle)
+            if accepted_changes:
+                item['resume_accepted_runtime_changes'] = accepted_changes
             sources.append(item)
         prefix = 0
         while prefix in completed:
@@ -165,6 +203,7 @@ def parser():
     p.add_argument('--sbu-per-hour', type=float, default=128)
     p.add_argument('--budget-sbu', type=float, default=12202 + 52/60)
     p.add_argument('--submit', action='store_true')
+    p.add_argument('--parallel', action='store_true', help='Submit independent jobs without dependencies; one GPU per job')
     p.add_argument('--phase-separation', action='store_true', help='Opt into single-GPU observation-encoding offload after stage-00 validation')
     return p
 
@@ -214,7 +253,7 @@ def main():
     if max(int(s['environment']['TEST_NUM']) for s in specs)*a.minutes_per_episode+a.startup_minutes > wall_hours*60:
         p.error('Estimated per-job runtime exceeds --time; reduce episodes or increase the limit')
     reservation_ceiling = len(specs)*wall_hours*a.sbu_per_hour
-    manifest = dict(schema_version=1, stage=a.stage, submitted=a.submit, runs=reused + specs,
+    manifest = dict(schema_version=1, stage=a.stage, submitted=a.submit, parallel=a.parallel, runs=reused + specs,
                     resume_from=str(a.resume_from.resolve()) if a.resume_from else None,
                     estimate=dict(episodes=count, sbu=estimated, budget_sbu=a.budget_sbu,
                                   sbu_per_hour=a.sbu_per_hour, startup_minutes=a.startup_minutes,
@@ -254,8 +293,8 @@ def main():
                f'--job-name=zw_{spec["task"]}_{spec["label"]}', f'--chdir={ROOT}']
         if a.account:
             cmd += [f'--account={a.account}']
-        # Sequential within this campaign: avoid shared Robotwin patch races and GPU contention.
-        if previous:
+        # Parallel jobs have job-local outputs; retain sequential submission as an option.
+        if previous and not a.parallel:
             cmd += [f'--dependency=afterany:{previous}']
         cmd += [str(a.job_script.resolve())]
         spec['command'] = cmd
@@ -270,7 +309,7 @@ def main():
             except (OSError, subprocess.CalledProcessError) as error:
                 spec['status'] = 'submission_failed'; spec['error'] = str(error); save(); raise
         save()
-    print(f'Manifest: {a.manifest}; '+('submitted sequentially' if a.submit else 'DRY RUN: nothing submitted'))
+    print(f'Manifest: {a.manifest}; '+(('submitted independently' if a.parallel else 'submitted sequentially') if a.submit else 'DRY RUN: nothing submitted'))
 
 
 if __name__ == '__main__':
