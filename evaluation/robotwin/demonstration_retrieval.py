@@ -12,11 +12,14 @@ from pathlib import Path
 
 def tokens(text):
     text = text.lower().replace('electronicscale', 'electronic scale').replace('breadbasket', 'bread basket')
-    aliases = {'breads': 'bread', 'loaf': 'bread', 'loaves': 'bread', 'placing': 'place',
+    text = text.replace('one by one', 'sequentially')
+    aliases = {'breads': 'bread', 'loaf': 'bread', 'loaves': 'bread', 'bun': 'bread',
+               'buns': 'bread', 'toast': 'bread', 'bowl': 'basket', 'placing': 'place',
                'put': 'place', 'lay': 'place', 'set': 'place', 'grab': 'grasp', 'take': 'grasp',
-               'both': 'two', 'single': 'one'}
+               'drop': 'place', 'position': 'place', 'stack': 'place'}
     stop = {'the', 'a', 'an', 'to', 'of', 'on', 'in', 'into', 'and', 'with', 'using',
-            'use', 'it', 'there', 'is', 'if', 'robotwin', 'generated', 'video', 'kling', 'v3'}
+            'use', 'it', 'there', 'is', 'if', 'robotwin', 'generated', 'video', 'kling', 'v3',
+            'one', 'two', 'both', 'single', 'hand', 'hands', 'arm', 'arms'}
     return [aliases.get(t, t) for t in re.findall(r'[a-z]+', text) if t not in stop]
 
 
@@ -49,11 +52,13 @@ def description(path):
 def bread_count(caption):
     """Conservative short-caption object count; arm/hand counts are not object counts."""
     text = caption.lower()
-    if re.search(r'\b(two|both)\s+(?:[\w-]+\s+){0,3}(breads|loaves)\b', text):
+    food = r'(?:bread|loaf|bun|toast|breads|loaves|buns)'
+    if re.search(r'\b(two|both)\s+(?:(?!hands?\b|arms?\b)[\w-]+\s+){0,3}(breads|loaves|buns)\b', text):
         return 2
-    if re.search(r'\b(bread|loaf)\b[^.!?]*\band\s+(a|an)\s+(?:[\w-]+\s+){0,3}(bread|loaf)\b', text):
+    modifiers = r'(?:(?!(?:place|put|set|lay|move|pick|grasp|grab|drop|lift|hold)\b)[\w-]+\s+){0,4}'
+    if re.search(r'\b' + food + r'\b[^.!?;]*?\band\s+' + modifiers + food + r'\b', text):
         return 2
-    if re.search(r'\b(one|single|a|an)\s+(?:[\w-]+\s+){0,3}(bread|loaf)\b', text):
+    if re.search(r'\b(one|single|a|an|the)\s+(?:(?!hands?\b|arms?\b)[\w-]+\s+){0,3}' + food + r'\b', text):
         return 1
     return None
 
@@ -79,12 +84,19 @@ class DemonstrationRetriever:
         if task not in anchors:
             raise ValueError(f'Automatic retrieval is not configured for task {task}')
         candidates = [i for i in self.items if anchors[task] & i['domain_words']]
+        domain_count = len(candidates)
+        # Require the described placement goal, not merely a task-like directory name.
+        required_goal = 'scale' if task == 'place_object_scale' else 'basket'
+        candidates = [i for i in candidates if required_goal in i['words'] and 'place' in i['words']]
+        goal_count = len(candidates)
+        desired_count = object_count if object_count in (1, 2) else bread_count(instruction)
+        if task == 'place_bread_basket' and desired_count:
+            matching = [i for i in candidates if i['caption_object_count'] == desired_count]
+            # Use known matches first; unknown counts are allowed only when none is known.
+            candidates = matching or [i for i in candidates if i['caption_object_count'] is None]
         if not candidates:
-            raise ValueError(f'No caption candidates for {task}; inspect the local HumanGen inventory')
+            raise ValueError(f'No compatible placement captions for {task}, object count {desired_count}; inspect the HumanGen inventory')
         query = set(tokens(instruction))
-        if object_count in (1, 2):
-            query.discard('one' if object_count == 2 else 'two')
-            query.add('one' if object_count == 1 else 'two')
         documents = [Counter(i['words']) for i in candidates]
         average = sum(sum(d.values()) for d in documents) / len(documents)
         frequency = Counter(word for d in documents for word in d)
@@ -95,9 +107,6 @@ class DemonstrationRetriever:
                 n = counts[word]
                 idf = math.log(1 + (len(documents) - frequency[word] + .5) / (frequency[word] + .5))
                 score += idf * n * 2.5 / (n + 1.5 * (.25 + .75 * sum(counts.values()) / average))
-            desired_count = object_count if object_count in (1, 2) else bread_count(instruction)
-            if task == 'place_bread_basket' and desired_count and item['caption_object_count'] and item['caption_object_count'] != desired_count:
-                score -= 2.
             scores.append((score, item))
         ranked = sorted(scores, key=lambda pair: (-pair[0], pair[1]['latent']))
         score, selected = ranked[0]
@@ -106,6 +115,8 @@ class DemonstrationRetriever:
             return {k: item[k] for k in ('latent', 'caption', 'caption_source', 'caption_object_count')} | {'score': value}
         record = dict(method='bm25_caption', task=task, query=instruction,
                       scene_object_count=object_count,
+                      requested_caption_object_count=desired_count,
+                      domain_candidate_count=domain_count, placement_candidate_count=goal_count,
                       candidate_count=len(candidates), indexed_count=len(self.items),
                       selected=audit(ranked[0]), top_candidates=[audit(p) for p in ranked[:5]],
                       limitation='Text retrieval; video contents and actual object count are not verified')

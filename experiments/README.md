@@ -319,8 +319,10 @@ The original baselines and guidance pilot use a fixed task-to-video map.
 `--demonstration-retrieval caption` instead scans local `generated_video*.pth`
 files, reading cached metadata on CPU with `weights_only=True` and memory mapping
 when supported; no GPU model or video decoding is involved. It ranks task-domain candidates by
-BM25 overlap with the scene instruction (including simple word aliases), preferring
-matching explicit one/two-object descriptions for bread using its actual scene count.
+BM25 overlap with the scene instruction (including simple word aliases). Candidates
+must describe placement into a basket/bowl or onto a scale. Bread uses known matching
+object counts first, excludes known mismatches, and falls back to unknown counts only
+when no known match exists. Arm counts and “one by one” are not object counts.
 Caption text comes first from the `.pth` fields `text`, `local_instruction`, then
 `task`. Sibling JSON captions and directory descriptions are fallbacks. Provenance
 is recorded. Short-caption bread counts distinguish objects from mentions of two

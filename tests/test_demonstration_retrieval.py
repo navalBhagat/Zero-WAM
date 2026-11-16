@@ -44,3 +44,26 @@ def test_cached_caption_overrides_misleading_folder_and_ignores_hand_count(tmp_p
     assert audit['selected']['caption_source'].endswith('.pth:text')
     assert bread_count(captions[0])==2 and bread_count(captions[1])==1
     assert r.select('place_bread_basket','Place both breads in the basket',2)[1].endswith(names[0]+'/generated_video.pth')
+
+
+def test_real_caption_phrases_do_not_confuse_object_count_or_task_goal(tmp_path):
+    captions={
+        '657': 'Use hands to pick up the square bread and round bread from the right side of the table and place them into the basket one by one',
+        '557': 'Use one hand to sequentially pick up a long bun and a square toast from the left side of the table and place them into a wooden basket on the right.',
+        '457': 'Use one hand to pick up the bread on the right and place it into the wooden bowl in the center.',
+        '908': 'Hold the skillet handle with one hand and use the other hand to pick up the bread and place it into the skillet.',
+    }
+    from evaluation.robotwin.demonstration_retrieval import bread_count
+    assert bread_count(captions['657'])==2
+    assert bread_count(captions['557'])==2
+    assert bread_count(captions['457'])==1
+    assert bread_count('Pick up the bread and place the bread into the basket.')==1
+    for name,caption in captions.items():
+        directory=tmp_path/(name+'_robotwin_place_bread_basket');directory.mkdir()
+        torch.save({'text':caption},directory/'generated_video.pth')
+    retriever=DemonstrationRetriever(tmp_path)
+    _, path, audit=retriever.select('place_bread_basket','Place one bread in the bread basket')
+    assert '/457_' in path and audit['candidate_count']==1
+    assert audit['domain_candidate_count']==4 and audit['placement_candidate_count']==3
+    assert audit['requested_caption_object_count']==1
+    assert '/457_' not in retriever.select('place_bread_basket','Place both breads in basket',2)[1]
