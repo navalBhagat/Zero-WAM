@@ -151,7 +151,16 @@ type -a python
 python -c "import sys; print('EXECUTABLE:', sys.executable, flush=True); print('PREFIX:', sys.prefix, flush=True)"
 export PYTHONPATH="$ZERO_WAM_ROOT:$ROBOTWIN_ROOT:${PYTHONPATH:-}"
 python - <<'PY'
+import json
+import os
+from pathlib import Path
 import evaluation.robotwin.eval_policy_client_openpi
+if os.environ.get('DEMONSTRATION_RETRIEVAL') == 'caption':
+    from evaluation.robotwin.demonstration_retrieval import DemonstrationRetriever
+    retriever = DemonstrationRetriever(os.environ['ICL_LATENT_ROOT'])
+    _, _, inventory = retriever.select(os.environ['TASK'], os.environ['TASK'].replace('_', ' '))
+    Path(os.environ['SAVE_ROOT'], 'retrieval_inventory.json').write_text(json.dumps(inventory, indent=2))
+    print('Retrieval inventory:', inventory['indexed_count'], 'indexed;', inventory['candidate_count'], 'task candidates')
 from evaluation.robotwin.test_render import Sapien_TEST
 # Call directly: __init__ catches errors and can exit with a success status.
 probe = Sapien_TEST.__new__(Sapien_TEST)

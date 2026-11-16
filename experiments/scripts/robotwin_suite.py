@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[2]
 MODES = {'text': (0, 1, 0), 'icl': (1, 0, 0), 'guidance': (0, 0, 1),
          'icl_guidance': (1, 0, 1)}
 # Do not let an earlier interactive experiment silently contaminate a new stage.
-CONTROLLED = ('START_SEED', 'EPISODE_OFFSET', 'COMPACT_OBSERVATION_CACHE', 'SAVE_ROLLOUT_SNAPSHOTS', 'PHASE_COMPARE_ACTIONS', 'PHASE_SEPARATION', 'PHASE_OFFLOAD_TRANSFORMER', 'STAGE_REQUIRE_SUCCESS', 'GUIDANCE_CAPTURE', 'GUIDANCE_SELECTION', 'GUIDANCE_REFERENCE_FRAMES',
+CONTROLLED = ('DEMONSTRATION_RETRIEVAL', 'START_SEED', 'EPISODE_OFFSET', 'COMPACT_OBSERVATION_CACHE', 'SAVE_ROLLOUT_SNAPSHOTS', 'PHASE_COMPARE_ACTIONS', 'PHASE_SEPARATION', 'PHASE_OFFLOAD_TRANSFORMER', 'STAGE_REQUIRE_SUCCESS', 'GUIDANCE_CAPTURE', 'GUIDANCE_SELECTION', 'GUIDANCE_REFERENCE_FRAMES',
               'GUIDANCE_MATCH_WINDOW', 'GUIDANCE_LOOKAHEAD', 'GUIDANCE_STRENGTH',
               'GUIDANCE_EVERY', 'GUIDANCE_MAX_NORM', 'GUIDANCE_REFERENCE_SOURCE',
               'GUIDANCE_DECODER_DTYPE', 'GUIDANCE_STATE_DTYPE', 'VIDEO_STATE_FP32',
@@ -42,13 +42,14 @@ def specifications(a):
                 variants = [(m, m, a.spp, 'fixed', 'float32', 0) for m in ('text', 'icl')]
             elif a.stage == 'guidance':
                 variants = [(f'{m}_{sel}', m, a.spp, sel, 'float32', 0)
-                            for m in (a.guidance_modes or ['guidance', 'icl_guidance']) for sel in ('fixed', 'window')]
+                            for m in (a.guidance_modes or ['guidance', 'icl_guidance']) for sel in (a.guidance_selectors or ['fixed', 'window'])]
             else:
                 variants = [(f'{m}_{dtype}', m, a.spp, 'window', dtype, 0)
                             for m in ('guidance', 'icl_guidance') for dtype in ('float32', 'float16')]
             for label, mode, spp, selector, dtype, repeat in variants:
                 icl, text, guide = MODES[mode]
                 env = dict(ZERO_WAM_ROOT=str(ROOT), TASK=task, SEED=str(seed),
+                    DEMONSTRATION_RETRIEVAL=a.demonstration_retrieval,
                     ICL_SEED=str(seed), SAMPLING_SEED=str(a.sampling_seed),
                     TEST_NUM=str(1 if a.stage == 'render' else a.episodes),
                     USE_ICL=str(icl), USE_TEXT=str(int(bool(text or icl))), USE_GUIDANCE=str(guide),
@@ -116,7 +117,7 @@ def extend_baselines(specs, previous_path, root):
         for old in previous['runs']:
             if (old['task'], old['seed'], old['mode']) != (spec['task'], spec['seed'], spec['mode']):
                 continue
-            if any(old['environment'].get(k) != v for k, v in env.items() if k not in ignored):
+            if any(old['environment'].get(k, 'fixed' if k == 'DEMONSTRATION_RETRIEVAL' else None) != v for k, v in env.items() if k not in ignored):
                 continue
             if not old.get('job_id'):
                 continue
@@ -181,6 +182,8 @@ def parser():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('stage', choices=['render', 'baselines', 'guidance', 'precision'])
     p.add_argument('--tasks', nargs='+', choices=['place_object_scale', 'place_bread_basket'])
+    p.add_argument('--demonstration-retrieval', choices=['fixed', 'caption'], default='fixed')
+    p.add_argument('--guidance-selectors', nargs='+', choices=['fixed', 'window'])
     p.add_argument('--sampling-seed', type=int, default=1234)
     p.add_argument('--guidance-modes', nargs='+', choices=['guidance', 'icl_guidance'],
                    help='Guidance-stage conditions; defaults to both')

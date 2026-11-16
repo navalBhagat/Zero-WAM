@@ -312,3 +312,47 @@ valid-KV/metadata preservation and bounded physical storage. It does not load a
 checkpoint or certify CUDA numerics. CUDA transfer tests skip without a GPU. Stage
 00 is the required full-workload validation. Do not infer paper reproduction or
 success-rate improvement from these smoke tests.
+
+### Automatic demonstration retrieval + temporal-only pilot
+
+The original baselines and guidance pilot use a fixed task-to-video map.
+`--demonstration-retrieval caption` instead scans local `generated_video*.pth`
+files without loading their latent tensors. It ranks task-domain candidates by
+BM25 overlap with the scene instruction (including simple word aliases), preferring
+matching explicit one/two-object descriptions for bread using its actual scene count.
+Caption text comes from sibling `metadata.json`, `caption.json` or `prompt.json`
+when available; otherwise the sample directory's description is used and labeled.
+This is deterministic **text retrieval, not a learned semantic/video verifier**.
+It cannot detect a generated video contradicting its caption, and cannot choose a
+better example if only one relevant candidate is installed. Check candidate counts
+and previews before interpreting results. Query text is used for retrieval only;
+`USE_TEXT=0` still leaves the policy's target text empty.
+
+Inspect the available ranking on Snellius before submitting (no GPU/model needed):
+
+```bash
+python3 -m evaluation.robotwin.demonstration_retrieval \
+  "$HOME/Zero-WAM/data/HumanGen/human_latents/robotwin" \
+  --task place_bread_basket --instruction "Place one bread in the bread basket"
+```
+
+Submit two jobs, one temporal-only guidance episode per task:
+
+```bash
+python3 experiments/scripts/robotwin_suite.py guidance \
+  --tasks place_object_scale place_bread_basket \
+  --guidance-modes guidance --guidance-selectors window \
+  --demonstration-retrieval caption \
+  --seeds 0 --episodes 1 --spp 8 \
+  --phase-separation --compact-cache --parallel \
+  --time 01:00:00 --client-timeout 3000 --minutes-per-episode 20 \
+  --manifest experiments/stages/03_guidance_retrieval/manifest.json --submit
+```
+
+`retrieval_inventory.json` is created before loading the WAM; it is a generic
+preflight query, not the episode selection. Actual queries, scene object counts,
+scores, top-five candidates and selected caption provenance are saved per episode
+in `config.json` and `[demonstration-retrieval]` client log entries. Temporal matching
+then searches within the retrieved video. Keep the old pilot/source archive as a
+separate control rather than overwriting it. Sync these runtime changes only after
+previous jobs finish, or use an isolated checkout.
