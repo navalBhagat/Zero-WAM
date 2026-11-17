@@ -106,16 +106,15 @@ def test_consecutive_jobs_use_disjoint_server_and_rendezvous_ports():
         used.update(pair)
 
 
-def test_temporal_only_retrieval_pilot_is_two_guidance_only_jobs():
+def test_temporal_only_pilot_is_two_guidance_only_jobs():
     a=parser().parse_args(['guidance','--tasks','place_object_scale','place_bread_basket',
                           '--seeds','0','--episodes','1','--guidance-modes','guidance',
-                          '--guidance-selectors','window','--demonstration-retrieval','caption',
-                          '--manifest','/tmp/retrieval.json'])
+                          '--guidance-selectors','window',
+                          '--manifest','/tmp/guidance.json'])
     a.client_timeout=3000
     runs=specifications(a)
     assert len(runs)==2
     assert {r['task'] for r in runs}=={'place_object_scale','place_bread_basket'}
-    assert all(r['environment']['DEMONSTRATION_RETRIEVAL']=='caption' and
-               r['environment']['GUIDANCE_SELECTION']=='window' and
+    assert all(r['environment']['GUIDANCE_SELECTION']=='window' and
                r['environment']['USE_TEXT']=='0' and r['environment']['USE_ICL']=='0' and
                r['environment']['USE_GUIDANCE']=='1' for r in runs)

@@ -572,7 +572,6 @@ def eval_policy(task_name,
 
 
     now_seed = st_seed
-    demonstration_retriever = None
     clear_cache_freq = args["clear_cache_freq"]
 
     args["eval_mode"] = True
@@ -654,20 +653,14 @@ def eval_policy(task_name,
 
         prompt = TASK_ENV.get_instruction()
         icl_video_path, icl_latent_path = "", ""
-        retrieval_record = None
         if args["needs_reference"]:
-            if os.environ.get("DEMONSTRATION_RETRIEVAL", "fixed") == "caption":
-                from evaluation.robotwin.demonstration_retrieval import DemonstrationRetriever
-                if demonstration_retriever is None:
-                    demonstration_retriever = DemonstrationRetriever(args["icl_latent_root"])
-                object_count = len(TASK_ENV.bread) if task_name == "place_bread_basket" else None
-                icl_video_path, icl_latent_path, retrieval_record = demonstration_retriever.select(task_name, prompt, object_count)
-                print("[demonstration-retrieval] " + json.dumps(retrieval_record), flush=True)
-            else:
-                icl_video_path = select_icl_video(
-                    args["icl_video_mapping"], task_name, args["icl_seed"], now_id,
-                )
-                icl_latent_path = resolve_icl_latent_path(icl_video_path, args["icl_latent_root"])
+            icl_video_path = select_icl_video(
+                args["icl_video_mapping"], task_name, args["icl_seed"], now_id,
+            )
+            # Native ICL and reconstructed DINO references both use this cache.
+            icl_latent_path = resolve_icl_latent_path(
+                icl_video_path, args["icl_latent_root"]
+            )
         print(
             f"[ICL] task={task_name} episode={now_id} "
             f"video={icl_video_path} latent={icl_latent_path or 'MP4_FALLBACK'}",
@@ -687,7 +680,6 @@ def eval_policy(task_name,
             requested_conditioning=dict(use_icl=args["use_icl"], use_text=args["use_text"],
                                         use_guidance=args["use_guidance"]),
             selected_reference=dict(video=icl_video_path or None, latent=icl_latent_path or None),
-            demonstration_retrieval=retrieval_record,
         )
         ret = diagnostic_call("server reset / human-context cache", model.infer,
             dict(
