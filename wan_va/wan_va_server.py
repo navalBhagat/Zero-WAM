@@ -407,6 +407,8 @@ class VA_Server:
             videos = torch.cat(videos, dim=0) / 255.0 * 2.0 - 1.0
             vae_device = next(self.streaming_vae.vae.parameters()).device
             videos_chunk = videos.to(vae_device).to(self.dtype)
+            from .guidance.instrumentation import record_server_component
+            record_server_component(self, 'observation_vae_encode', videos_chunk)
             enc_out = self.streaming_vae.encode_chunk(videos_chunk)
 
         mu, logvar = torch.chunk(enc_out, 2, dim=1)
@@ -441,6 +443,8 @@ class VA_Server:
             videos.append(current.unsqueeze(2))
 
         video = torch.cat(videos, dim=0).to(self.vae.dtype)
+        from .guidance.instrumentation import record_server_component
+        record_server_component(self, 'initial_observation_vae_encode', video)
         encoded = self.streaming_vae.encode_chunk(video)
         mu, _ = torch.chunk(encoded, 2, dim=1)
         latents_mean = torch.tensor(self.vae.config.latents_mean).to(mu.device)
@@ -537,7 +541,9 @@ class VA_Server:
         return latent, None
 
     def _cache_icl_context(self, video_path, latent_path):
+        timer = getattr(self, 'active_reset_timer', None)
         latent, cached_text = self._load_or_encode_icl(video_path, latent_path)
+        if timer is not None: timer.mark('icl_reference_load_or_encode')
         expected_channels = len(self.vae.config.latents_mean)
         if latent.shape[1] != expected_channels:
             raise ValueError(
@@ -593,6 +599,7 @@ class VA_Server:
             cache_name=self.cache_name,
             mode="forward_latent_only",
         )
+        if timer is not None: timer.mark('icl_transformer_cache')
         logger.info(f"[ICL] persistent cache: {self.transformer.cache_counts()}")
 
     def _reset_icl(
@@ -607,6 +614,9 @@ class VA_Server:
         use_guidance=None,
     ):
         import os
+        from .guidance.instrumentation import ResetTimer
+        reset_timer = ResetTimer(self)
+        self.active_reset_timer = reset_timer
         from .conditioning import flag
         self.icl_text_source = os.environ.get("ICL_TEXT_SOURCE", "target")
         self.use_text = flag(getattr(self.job_config, "use_text", False) if use_text is None else use_text, "use_text")
@@ -619,6 +629,7 @@ class VA_Server:
         self.cached_caption_used = False
         self.last_guidance_selection = None
         self.latest_guidance_observation = None
+        reset_timer.mark('state_initialization')
         if self.use_guidance:
             from .guidance.dino_reward import DinoReward
 
@@ -636,7 +647,8 @@ class VA_Server:
             use_latent = source == "latent" or (
                 source == "auto" and not os.path.isfile(icl_video_path or "")
             )
-            if not hasattr(self, "external_reward"):
+            reference_first_use = not hasattr(self, "external_reward")
+            if reference_first_use:
                 decoder_dtype = getattr(self.job_config, "external_decoder_dtype", "float32")
                 if decoder_dtype not in ("float32", "bfloat16", "float16"):
                     raise ValueError("GUIDANCE_DECODER_DTYPE must be float32, float16 or bfloat16")
@@ -645,14 +657,20 @@ class VA_Server:
                     len(self.job_config.obs_cam_keys),
                     decoder_dtype=getattr(torch, decoder_dtype),
                 )
+            self.external_reward.compute_workload = {} if reset_timer.enabled else None
+            reset_timer.mark('reward_initialization')
             if use_latent:
                 if not icl_latent_path or not os.path.isfile(icl_latent_path):
                     raise FileNotFoundError("Guidance needs a human MP4 or cached human .pth")
                 logger.info("[external-guidance] reconstructing human reference on CPU: %s", icl_latent_path)
                 with decoder_on_cpu(self.vae):
+                    reset_timer.mark('decoder_to_cpu')
                     frames = reconstructed_reference(self.vae, icl_latent_path)
+                    reset_timer.mark('reference_reconstruction')
+                reset_timer.mark('decoder_restore_device')
             else:
                 frames = self._read_icl_video(icl_video_path)[0].permute(1, 0, 2, 3) / 255.0
+                reset_timer.mark('reference_video_read')
             from .guidance.selection import FixedFrameSelector
             reference_frames = getattr(self.job_config, "reference_frames", "0")
             if reference_frames == "last":
@@ -667,6 +685,19 @@ class VA_Server:
             elif selection_mode != "fixed":
                 raise ValueError("GUIDANCE_SELECTION must be fixed or window")
             self.external_reward.prepare_references(frames)
+            reset_timer.mark('reference_embedding')
+            if selection_mode == 'window' and os.environ.get('GUIDANCE_LOOKAHEAD_MODE', 'frames') == 'dino_distance':
+                from wan_va.guidance.temporal import DistanceFrameSelector
+                distance = os.environ.get('GUIDANCE_DISTANCE_INCREMENT', '')
+                self.guidance_selector = DistanceFrameSelector(
+                    self.external_reward.reference_features,
+                    window=int(os.environ.get('GUIDANCE_MATCH_WINDOW', '24')),
+                    lookahead=int(os.environ.get('GUIDANCE_LOOKAHEAD', '4')),
+                    distance=float(distance) if distance else None,
+                    smoothing=int(os.environ.get('GUIDANCE_DISTANCE_SMOOTHING', '3')),
+                    max_frames=int(os.environ.get('GUIDANCE_MAX_LOOKAHEAD_FRAMES', '24')))
+            elif os.environ.get('GUIDANCE_LOOKAHEAD_MODE', 'frames') not in ('frames', 'dino_distance'):
+                raise ValueError('GUIDANCE_LOOKAHEAD_MODE must be frames or dino_distance')
             self.external_reward.select_reference(self.guidance_selector.fixed_frames)
             self.reference_episode_index = getattr(self, "reference_episode_index", -1) + 1
             self.reference_preview_dir = os.path.join(
@@ -680,6 +711,7 @@ class VA_Server:
             del frames
             # Return unused reference allocations before sampling with the WAM resident.
             torch.cuda.empty_cache()
+        reset_timer.mark('reference_selection_and_previews')
         self.chunk_idx = 0
         self.init_latent = None
         self.last_predicted_latents = None
@@ -711,6 +743,7 @@ class VA_Server:
         ).reshape(-1, 1, 1)
         self.action_norm_method = self.job_config.action_norm_method
 
+        reset_timer.mark('cache_and_state_reset')
         if not self.use_text and self.empty_text_emb is not None:
             self.prompt_embeds = self.empty_text_emb.clone()
             self.negative_prompt_embeds = self.empty_text_emb.clone()
@@ -741,11 +774,15 @@ class VA_Server:
         logger.info("[conditioning] use_icl=%s use_text=%s use_guidance=%s; icl_text_source=%s target_text_source=%s",
                     self.use_icl, self.use_text, self.use_guidance,
                     self.icl_text_source, self.target_text_source)
+        reset_timer.mark('prompt_preparation')
         if self.use_icl:
             self._cache_icl_context(icl_video_path, icl_latent_path)
+        reset_timer.mark('icl_context_preparation')
         self.streaming_vae.clear_cache()
         if self.streaming_vae_half is not None:
             self.streaming_vae_half.clear_cache()
+        reset_timer.finish(first_reward_use=locals().get('reference_first_use', False))
+        self.active_reset_timer = None
         logger.info(
             "[ICL] reset complete: CUDA allocated=%.2f GiB, reserved=%.2f GiB; "
             "text_encoder=%s, prompt_embeddings=%s",
@@ -1061,6 +1098,8 @@ class VA_Server:
                 guidance_seconds=guidance_seconds,
                 action_seconds=finished-action_started,
             ))
+        from .guidance.instrumentation import flush_workload
+        flush_workload(self, 'sampling')
         return result
 
     def _compute_icl_kv_cache(self, obs):
@@ -1101,6 +1140,8 @@ class VA_Server:
             mode="forward_action_only",
             clean_window_cache=True,
         )
+        from .guidance.instrumentation import flush_workload
+        flush_workload(self, 'observation_cache')
         self.chunk_idx += 1
         logger.info(f"[ICL] cache after observation: {self.transformer.cache_counts()}")
         if getattr(self.transformer, "compact_observation_cache", False) or getattr(self, "phase_separation", False):
@@ -1383,6 +1424,10 @@ class VA_Server:
                 max_norm=self.job_config.external_max_norm,
                 checkpoint=resolved(self.job_config.dino_checkpoint),
                 reference_kind=self.external_reference_kind,
+                lookahead_mode=os.environ.get('GUIDANCE_LOOKAHEAD_MODE', 'frames'),
+                distance_increment=getattr(getattr(self, 'guidance_selector', None), 'distance', None),
+                distance_smoothing=getattr(getattr(self, 'guidance_selector', None), 'smoothing', None),
+                max_lookahead_frames=getattr(getattr(self, 'guidance_selector', None), 'max_frames', None),
                 selection_mode=os.environ.get("GUIDANCE_SELECTION", "explicit_fixed_frames"),
                 decoder_dtype=str(next(self.vae.decoder.parameters()).dtype),
                 fixed_reference_frames=getattr(getattr(self, "guidance_selector", None), "fixed_frames", None),
@@ -1412,6 +1457,7 @@ class VA_Server:
             action_inference_steps=self.job_config.action_num_inference_steps,
             frame_chunk_size=self.job_config.frame_chunk_size,
             sampling_seed=int(os.environ["SAMPLING_SEED"]) if os.environ.get("SAMPLING_SEED") else None,
+            reset_profile=getattr(self, 'last_reset_profile', None),
             guidance=guidance,
         )
 

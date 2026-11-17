@@ -1303,6 +1303,10 @@ class WanICLTransformer3DModel(ModelMixin, ConfigMixin):
 
         text_emb = input_dict["text_emb"]
         text_hidden_states = self.condition_embedder.text_embedder(text_emb)
+        from wan_va.guidance.instrumentation import record_transformer_work
+        record_transformer_work(self, mode, token_count, token_count+padded_length,
+                                key_type.numel(), text_hidden_states.shape[1])
+
         encoder_seq = input_dict.get(
             "encoder_seq_ids",
             torch.zeros(text_hidden_states.shape[1], device=device, dtype=torch.int),

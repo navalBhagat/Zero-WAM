@@ -8,6 +8,10 @@ import math
 from pathlib import Path
 import statistics
 import subprocess
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from experiments.analysis.compute import estimate as estimate_compute, records as compute_records
+from experiments.analysis import report
 
 
 COMPONENTS = ['sampling', 'server_reset', 'cache_update', 'camera_render', 'planning',
@@ -66,12 +70,21 @@ def wilson(successes, n):
     return mid-half, mid+half
 
 
-def collect(manifest, runs_root):
+def collect(manifest, runs_root, model_config=None):
     runs, episodes, chunks, guidance = [], [], [], []
+    seen_jobs, seen_episodes = set(), {}
     for number, spec in enumerate(manifest['runs']):
         env = spec['environment']; job = spec.get('job_id')
+        job_key = (spec['task'], job)
+        if job and job_key in seen_jobs: continue
+        if job: seen_jobs.add(job_key)
         root = runs_root or Path(env['EXPERIMENT_OUTPUT_ROOT'])
         folder = root/f'{spec["task"]}_{job}'
+        if runs_root and not folder.exists():
+            # Locally copied resumed jobs can live under their original stage.
+            candidates = list(runs_root.parent.parent.glob(f'*/runs/{folder.name}'))
+            if len(candidates)==1: folder=candidates[0]
+            elif len(candidates)>1: raise ValueError(f'Ambiguous local run copies: {folder.name}')
         base = dict(run=number, job_id=job, task=spec['task'], label=(spec['label'].split('_r')[0] if manifest['stage']=='render' else spec['label']),
                     run_label=spec['label'],
                     seed=spec['seed'], repeat=spec.get('repeat', 0), mode=spec['mode'],
@@ -79,9 +92,12 @@ def collect(manifest, runs_root):
                     decoder_dtype=env['GUIDANCE_DECODER_DTYPE'])
         config = read(folder/'config.json', {})
         timing = read(folder/'job_timing.json', {})
+        estimates = estimate_compute(folder, config, model_config)
+        reset_profiles = compute_records(folder/'server.log', '[reset-profile]')
         requested = int(env['TEST_NUM'])
         completed = [e for e in config.get('episodes', []) if e.get('status') == 'completed']
-        run = dict(base, path=str(folder), requested=requested, completed=len(completed),
+        run = dict(base, episode_offset=int(env.get('EPISODE_OFFSET', 0)),
+                   incomplete_records=sum(e.get('status')!='completed' for e in config.get('episodes', [])), path=str(folder), requested=requested, completed=len(completed),
                    missing=max(0, requested-len(completed)), exit_code=timing.get('exit_code'),
                    allocated_seconds=timing.get('allocated_seconds'),
                    estimated_sbu=(timing['allocated_seconds']/3600*manifest['estimate']['sbu_per_hour']
@@ -93,6 +109,14 @@ def collect(manifest, runs_root):
                            else 'incomplete_or_failed'))
         runs.append(run)
         for episode in completed:
+            identity = (base['task'],base['label'],episode.get('simulator_seed'),
+                        env['SAMPLING_SEED'],episode.get('icl_seed'),base['repeat'])
+            # Missing simulator seeds cannot establish identity across jobs.
+            if episode.get('simulator_seed') is not None and identity in seen_episodes:
+                if seen_episodes[identity] != episode['success']:
+                    raise ValueError(f'Conflicting duplicate episode: {identity}')
+                continue
+            if episode.get('simulator_seed') is not None: seen_episodes[identity]=episode['success']
             profile_path = next(folder.glob(f'**/profile_episode_{episode["episode_id"]}.json'), None)
             profile = read(profile_path, {}) if profile_path else {}
             row = dict(base, episode_id=episode['episode_id'],
@@ -110,6 +134,23 @@ def collect(manifest, runs_root):
                 row['seconds_per_action'] = profile['wall_seconds']/row['actions'] if row['actions'] else None
                 row['camera_hooks'] = json.dumps({k:v for k,v in profile.get('hooks', {}).items()
                                                 if 'camera' in k or 'physics' in k})
+            row.update(estimates.get(episode['episode_id'], {}))
+            if row.get('chunks') and episode.get('server', {}).get('video_inference_steps') is not None:
+                expected = row['chunks']*(episode['server']['video_inference_steps']+1)
+                recorded = row.get('sampling_video_calls', 0)
+                row['compute_sampling_log_coverage'] = min(1., recorded/expected)
+                if recorded != expected:
+                    row['compute_status'] = row.get('compute_status', 'unavailable')+'; incomplete_sampling_logs'
+            if row.get('transformer_core_linear_tflops') is not None and row.get('chunks'):
+                row['transformer_core_linear_tflops_per_chunk'] = row['sampling_transformer_core_linear_tflops']/row['chunks']
+            reset = episode.get('server', {}).get('reset_profile')
+            if not reset:
+                ordinal = config.get('episodes', []).index(episode)
+                reset = next((r for r in reset_profiles if r.get('episode')==ordinal), None)
+            row['reset_components_seconds'] = (reset or {}).get('components_seconds', {})
+            if profile and 'server_reset' in profile.get('timings', {}):
+                row['preparation_seconds'] = row['server_reset']
+                row['rollout_seconds'] = max(0., row['wall_seconds']-row['server_reset'])
             episodes.append(row)
         profiled = [e['wall_seconds'] for e in episodes if e['run']==number and e.get('wall_seconds') is not None]
         run['profiled_episode_seconds'] = sum(profiled)
@@ -274,50 +315,37 @@ def main():
     p=argparse.ArgumentParser(description=__doc__)
     p.add_argument('manifest',type=Path); p.add_argument('--runs-root',type=Path)
     p.add_argument('--output',type=Path); p.add_argument('--sacct',action='store_true')
+    p.add_argument('--diagnostics', action='store_true', help='Write detailed legacy tables/plots into diagnostics/')
+    p.add_argument('--compute-model-config', type=Path, help='Historical transformer checkpoint config.json; otherwise architecture assumptions are explicit')
     a=p.parse_args(); manifest=read(a.manifest)
     output=a.output or a.manifest.parent/'analysis'; output.mkdir(parents=True,exist_ok=True)
-    runs,episodes,chunks,guidance=collect(manifest,a.runs_root)
-    paired=pairs(episodes,manifest['stage'])
-    for name,rows in [('runs',runs),('episodes',episodes),('summary',summaries(episodes)),
-                      ('paired',paired),('server_chunks',chunks),('guidance',guidance)]:
-        write_csv(output/f'{name}.csv',rows)
-    # Keep between-seed variability visible rather than treating every episode as independent.
-    seed_rows=[]
-    for seed in sorted({e['seed'] for e in episodes}):
-        seed_rows += [dict(seed=seed,**s) for s in summaries([e for e in episodes if e['seed']==seed])]
-    write_csv(output/'per_seed.csv',seed_rows)
-    accounting=[]
-    if a.sacct:
-        ids=[str(r['job_id']) for r in runs if r['job_id']]
-        if ids:
-            result=subprocess.run(['sacct','-j',','.join(ids),'-X','-P','--units=G',
-                '--format=JobIDRaw,State,ElapsedRaw,AllocTRES,ExitCode'],text=True,capture_output=True)
-            (output/'sacct.txt').write_text(result.stdout+result.stderr)
-            if result.returncode: print('WARNING: sacct failed; see sacct.txt')
-            else: accounting=accounting_from_sacct(result.stdout,manifest['estimate']['sbu_per_hour'])
-            write_csv(output/'accounting.csv',accounting)
-    notes=['# Campaign analysis',f'Stage: {manifest["stage"]}',
-           f'Requested episodes: {sum(r["requested"] for r in runs)}; completed: {len(episodes)}; '
-           f'missing: {sum(r["missing"] for r in runs)}.',
-           f'Matched comparisons: {len(paired)}. Inspect paired.csv; actual simulator seeds must match.',
-           f'Job-script estimated cost for {sum(r["estimated_sbu"] is not None for r in runs)}/{len(runs)} timed jobs: '
-           f'{sum(r["estimated_sbu"] or 0 for r in runs):.2f} SBUs. Missing timings are unaccounted; use sacct.',
-           'Timing bars use exclusive durations; unavailable hooks remain in parent or unprofiled costs.',
-           'Compare per-action and per-chunk costs alongside totals and action counts. '
-           'Changing SPP can change behavior, not only rendering time.',
-           'Wilson intervals are descriptive pooled intervals; use per_seed.csv for seed-level variability. '
-           'Repeated rendering trials are not independent success-rate evidence.',
-           'Do not compare absolute DINO reward across changing targets as evidence of improvement.']
-    if accounting:
-        notes.append(f"sacct elapsed-time estimated charge: {sum(r['estimated_sbu'] or 0 for r in accounting):.2f} SBUs "
-                     f"across {sum(r['estimated_sbu'] is not None for r in accounting)}/{len(accounting)} "
-                     "accounting rows with GPU counts. Pending/running rows are not final charges.")
+    local_root=a.manifest.resolve().parent/'runs'
+    root=a.runs_root or (local_root if local_root.is_dir() else None)
+    runs,episodes,chunks,guidance=collect(manifest,root,a.compute_model_config)
+    rows=report.results(runs,episodes,wilson)
+    write_csv(output/'results.csv',rows)
     try:
-        plots(output,runs,episodes,chunks,guidance)
+        report.plots(output,rows)
     except ImportError as error:
-        notes.append(f'Plots skipped: {error}. Install experiments/analysis/requirements.txt and rerun.')
-    (output/'README.md').write_text('\n\n'.join(notes)+'\n')
-    print('\n'.join(notes)); print(f'Outputs: {output}')
+        raise SystemExit(f'CSV written; plots need experiments/analysis/requirements.txt: {error}')
+    report.clean_legacy(output)
+    if a.diagnostics or a.sacct:
+        detail=output/'diagnostics'; detail.mkdir(exist_ok=True)
+        if a.diagnostics:
+            for name,values in [('runs',runs),('episodes',episodes),('summary',summaries(episodes)),
+                    ('paired',pairs(episodes,manifest['stage'])),('server_chunks',chunks),('guidance',guidance)]:
+                write_csv(detail/f'{name}.csv',values)
+            plots(detail,runs,episodes,chunks,guidance)
+        if a.sacct:
+            ids=sorted({str(r['job_id']) for r in runs if r['job_id']})
+            if ids:
+                result=subprocess.run(['sacct','-j',','.join(ids),'-X','-P','--units=G',
+                    '--format=JobIDRaw,State,ElapsedRaw,AllocTRES,ExitCode'],text=True,capture_output=True)
+                (detail/'sacct.txt').write_text(result.stdout+result.stderr)
+                if result.returncode: print('WARNING: sacct failed; see diagnostics/sacct.txt')
+                else: write_csv(detail/'accounting.csv',accounting_from_sacct(result.stdout,manifest['estimate']['sbu_per_hour']))
+    print(f'Outputs: {output}/results.csv, success.png, cost.png')
+    print('FLOPs are a partial transformer subtotal, not a full guidance-versus-ICL compute comparison.')
 
 
 if __name__=='__main__': main()

@@ -26,6 +26,8 @@ class DinoReward:
         self.selected_frames = None
 
     def features(self, frames):
+        from .instrumentation import record_reward_component
+        record_reward_component(self, 'dino_features', frames)
         # Differentiable preprocessing; frames are RGB in [0, 1].
         frames = F.interpolate(frames.float(), (224, 224), mode="bicubic",
                                align_corners=False).clamp(0, 1)
@@ -79,6 +81,8 @@ class DinoReward:
         return paths
 
     def decode(self, clean):
+        from .instrumentation import record_reward_component
+        record_reward_component(self, 'reward_vae_decode', clean)
         if clean.shape[-1] % self.camera_count:
             raise ValueError("Expected equal camera latents concatenated along width")
         camera = clean.chunk(self.camera_count, dim=-1)[0]

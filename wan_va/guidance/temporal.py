@@ -30,6 +30,66 @@ class WindowFrameSelector:
         return [min(self.frame_count - 1, self.position + self.lookahead)]
 
 
+class DistanceFrameSelector(WindowFrameSelector):
+    """Same greedy alignment, with a bounded reference visual-distance horizon.
+
+    Distances are cosine changes between smoothed whole-image DINO embeddings,
+    not a semantic completion estimate. Matching never advances to the target.
+    """
+    def __init__(self, features, window=24, lookahead=4, distance=None,
+                 smoothing=3, max_frames=24):
+        import bisect
+        import statistics
+        import torch
+        if smoothing < 1 or smoothing % 2 != 1 or max_frames < 1:
+            raise ValueError('Smoothing must be positive odd; max_frames must be positive')
+        if distance is not None and (not math.isfinite(distance) or distance <= 0):
+            raise ValueError('Distance increment must be finite and positive')
+        if features.ndim != 2 or not len(features) or not torch.isfinite(features).all():
+            raise ValueError('Expected finite nonempty [frames, features] embeddings')
+        super().__init__(len(features), window, lookahead)
+        features = features.detach().float().cpu()
+        radius = smoothing // 2
+        smoothed = torch.stack([features[max(0, i-radius):i+radius+1].mean(0)
+                                for i in range(len(features))])
+        smoothed = torch.nn.functional.normalize(smoothed, dim=-1)
+        changes = (1 - (smoothed[1:] * smoothed[:-1]).sum(-1)).clamp(0, 2)
+        # Float32 dot-product noise must not turn an identical reference into motion.
+        changes[changes < 1e-6] = 0
+        self.coordinate = [0.] + changes.cumsum(0).tolist()
+        spans = [self.coordinate[i+lookahead]-self.coordinate[i]
+                 for i in range(max(0, len(features)-lookahead))] if lookahead else []
+        self.distance = distance if distance is not None else (statistics.median(spans) if spans else 0.)
+        self.max_frames, self.smoothing = max_frames, smoothing
+        self.calibration = 'explicit' if distance is not None else 'reference_median_frame_horizon'
+        self.details = {}
+        self._bisect = bisect.bisect_left
+
+    def select(self, chunk_index, frame_indices=None, similarities=None):
+        matched = super().select(chunk_index, frame_indices, similarities)
+        if frame_indices is not None:
+            self.details = {}
+            return matched
+        start = self.position
+        limit = min(self.frame_count-1, start+self.max_frames)
+        if self.distance <= 1e-12:
+            # No positive calibrated horizon: preserve the frame baseline, bounded.
+            target = min(limit, start+self.lookahead)
+            fallback = 'zero_calibrated_distance'
+        else:
+            target = min(limit, self._bisect(self.coordinate,
+                         self.coordinate[start]+self.distance, lo=start))
+            fallback = None
+        actual = self.coordinate[target]-self.coordinate[start]
+        self.details = dict(lookahead_mode='dino_distance', target_frame=target,
+            matched_distance=self.coordinate[start], target_distance=self.coordinate[target],
+            requested_distance=self.distance, actual_distance=actual,
+            frame_offset=target-start, horizon_limited=actual+1e-12 < self.distance,
+            max_forward_frames=self.max_frames, smoothing=self.smoothing,
+            distance_calibration=self.calibration, fallback=fallback)
+        return [target]
+
+
 def select_reference(server, request):
     """Match latest observed external-camera RGB, freeze target and write a QA trace."""
     import json
@@ -53,6 +113,7 @@ def select_reference(server, request):
         indices = server.guidance_selector.select(server.chunk_idx, similarities=scores)
         match_details = dict(matched_frame=server.guidance_selector.position,
                              matched_similarity=scores[server.guidance_selector.position])
+        match_details.update(getattr(server.guidance_selector, 'details', {}))
         from PIL import Image
         preview = image[0].detach().cpu().permute(1, 2, 0).mul(255).byte().numpy()
         preview_path = os.path.join(server.reference_preview_dir, f"robot_chunk_{server.chunk_idx:04d}.png")

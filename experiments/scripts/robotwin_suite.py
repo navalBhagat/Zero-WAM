@@ -19,7 +19,7 @@ MODES = {'text': (0, 1, 0), 'icl': (1, 0, 0), 'guidance': (0, 0, 1),
          'icl_guidance': (1, 0, 1)}
 # Do not let an earlier interactive experiment silently contaminate a new stage.
 CONTROLLED = ('START_SEED', 'EPISODE_OFFSET', 'COMPACT_OBSERVATION_CACHE', 'SAVE_ROLLOUT_SNAPSHOTS', 'PHASE_COMPARE_ACTIONS', 'PHASE_SEPARATION', 'PHASE_OFFLOAD_TRANSFORMER', 'STAGE_REQUIRE_SUCCESS', 'GUIDANCE_CAPTURE', 'GUIDANCE_SELECTION', 'GUIDANCE_REFERENCE_FRAMES',
-              'GUIDANCE_MATCH_WINDOW', 'GUIDANCE_LOOKAHEAD', 'GUIDANCE_STRENGTH',
+              'GUIDANCE_LOOKAHEAD_MODE', 'GUIDANCE_DISTANCE_INCREMENT', 'GUIDANCE_DISTANCE_SMOOTHING', 'GUIDANCE_MAX_LOOKAHEAD_FRAMES', 'GUIDANCE_MATCH_WINDOW', 'GUIDANCE_LOOKAHEAD', 'GUIDANCE_STRENGTH',
               'GUIDANCE_EVERY', 'GUIDANCE_MAX_NORM', 'GUIDANCE_REFERENCE_SOURCE',
               'GUIDANCE_DECODER_DTYPE', 'GUIDANCE_STATE_DTYPE', 'VIDEO_STATE_FP32',
               'USE_ICL', 'USE_TEXT', 'USE_GUIDANCE', 'TEXT_GUIDANCE_SCALE',
@@ -47,6 +47,8 @@ def specifications(a):
                 variants = [(f'{m}_{dtype}', m, a.spp, 'window', dtype, 0)
                             for m in ('guidance', 'icl_guidance') for dtype in ('float32', 'float16')]
             for label, mode, spp, selector, dtype, repeat in variants:
+                if selector == 'window' and a.lookahead_mode == 'dino_distance':
+                    label += '_dino_distance'
                 icl, text, guide = MODES[mode]
                 env = dict(ZERO_WAM_ROOT=str(ROOT), TASK=task, SEED=str(seed),
                     ICL_SEED=str(seed), SAMPLING_SEED=str(a.sampling_seed),
@@ -64,6 +66,11 @@ def specifications(a):
                     CLIENT_TIMEOUT=str(a.client_timeout), EXPERIMENT_LABEL=label,
                     EXPERIMENT_STAGE=a.stage, EXPERIMENT_REPEAT=str(repeat),
                     EXPERIMENT_OUTPUT_ROOT=str(a.manifest.resolve().parent/'runs'))
+                if a.lookahead_mode != 'frames':
+                    env.update(GUIDANCE_LOOKAHEAD_MODE=a.lookahead_mode,
+                        GUIDANCE_DISTANCE_INCREMENT=str(a.distance_increment) if a.distance_increment is not None else '',
+                        GUIDANCE_DISTANCE_SMOOTHING=str(a.distance_smoothing),
+                        GUIDANCE_MAX_LOOKAHEAD_FRAMES=str(a.max_lookahead_frames))
                 specs.append(dict(task=task, seed=seed, label=label, mode=mode, repeat=repeat,
                                   environment=env, status='planned'))
     return specs
@@ -193,6 +200,11 @@ def parser():
     p.add_argument('--spp', type=int, choices=[8, 16, 32], default=32)
     p.add_argument('--window', type=int, default=24)
     p.add_argument('--lookahead', type=int, default=4)
+    p.add_argument('--lookahead-mode', choices=['frames', 'dino_distance'], default='frames')
+    p.add_argument('--distance-increment', type=float,
+                   help='Positive cumulative cosine distance; omitted: median reference change over --lookahead frames')
+    p.add_argument('--distance-smoothing', type=int, default=3, help='Odd reference embedding smoothing width')
+    p.add_argument('--max-lookahead-frames', type=int, default=24)
     p.add_argument('--fixed-frame', default='last', help='Zero-based RGB index or last')
     p.add_argument('--strength', type=float, default=.01)
     p.add_argument('--partition', default='gpu_a100')
@@ -215,6 +227,11 @@ def main():
     p = parser(); a = p.parse_args()
     a.time = a.time or ('01:00:00' if a.stage == 'render' else '03:00:00')
     a.client_timeout = a.client_timeout or (2400 if a.stage == 'render' else 9000)
+    import math
+    if a.distance_increment is not None and (not math.isfinite(a.distance_increment) or a.distance_increment <= 0):
+        p.error('--distance-increment must be finite and positive')
+    if a.distance_smoothing < 1 or a.distance_smoothing % 2 != 1 or a.max_lookahead_frames < 1:
+        p.error('Distance smoothing must be positive odd; maximum lookahead must be positive')
     if a.sampling_seed < 0:
         p.error('Sampling seed must be nonnegative')
     if min(a.episodes, a.repeats, a.window, a.client_timeout) < 1 or a.lookahead < 0:
