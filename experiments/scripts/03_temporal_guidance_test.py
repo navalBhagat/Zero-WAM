@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import sys
 import types
+import time
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -82,7 +83,9 @@ def load_reference(args, episode, reference_module):
     if not latent.is_file(): raise ValueError(f'Reference latent missing: {latent}; pass --reference-latent')
     if not (vae_path/'config.json').is_file(): raise ValueError(f'VAE missing: {vae_path}; pass --vae-path or --model-path')
     from diffusers import AutoencoderKLWan
+    print(f'Loading VAE on CPU: {vae_path}', flush=True)
     vae = AutoencoderKLWan.from_pretrained(str(vae_path),torch_dtype=torch.float32,local_files_only=True).to('cpu').eval()
+    print(f'Reconstructing full human reference on CPU: {latent}', flush=True)
     with torch.inference_mode():
         frames = reference_module.reconstructed_reference(vae, latent)
     del vae
@@ -166,9 +169,14 @@ def main(argv=None):
     from transformers import AutoModel
     torch.set_num_threads(args.threads)
     temporal,dino,reference_module=guidance_modules()
+    started=time.perf_counter()
+    print(f'CPU replay starting with {args.threads} threads',flush=True)
     try:reference,provenance=load_reference(args,episode,reference_module)
     except (ValueError,OSError) as error:p.error(str(error))
     print(f'CPU only: {len(reference)} human frames, {len(chunks)} saved robot observations.',flush=True)
+    reference_seconds=time.perf_counter()-started
+    print(f'Reference preparation: {reference_seconds:.1f} seconds. Loading/embedding with DINO on CPU...',flush=True)
+    embedding_started=time.perf_counter()
     reward=dino.DinoReward.__new__(dino.DinoReward)
     reward.encoder=AutoModel.from_pretrained(str(args.dino_checkpoint),local_files_only=True).to('cpu').eval().requires_grad_(False)
     observations=[]
@@ -178,6 +186,8 @@ def main(argv=None):
         features=torch.cat([reward.features(batch) for batch in reference.split(4)])
         queries=torch.cat([reward.features(torch.from_numpy(np.asarray(img).copy()).permute(2,0,1).unsqueeze(0).float()/255)
                            for img in observations])
+    embedding_seconds=time.perf_counter()-embedding_started
+    print(f'DINO load + embeddings: {embedding_seconds:.1f} seconds. Selecting targets and plotting...',flush=True)
     rows,selector=replay(features,queries,chunks,args.window,args.lookahead,args.distance_increment,args.smoothing,args.max_lookahead_frames)
     args.output.mkdir(parents=True,exist_ok=True)
     with (args.output/'results.csv').open('w',newline='') as stream:
@@ -187,6 +197,8 @@ def main(argv=None):
         dino_checkpoint=str(args.dino_checkpoint.resolve()),window=args.window,frame_lookahead=args.lookahead,
         distance_increment=selector.distance,smoothing=args.smoothing,max_forward_frames=args.max_lookahead_frames,
         fallback_chunks=sum(bool(r['fallback']) for r in rows),cap_or_end_limited_chunks=sum(r['horizon_limited'] for r in rows),
+        timing_seconds=dict(reference_preparation=reference_seconds,dino_load_and_embedding=embedding_seconds,
+                            total=time.perf_counter()-started),
         interpretation='Counterfactual target selection on a recorded trajectory; does not measure policy success.')
     (args.output/'provenance.json').write_text(json.dumps(provenance,indent=2)+'\n')
     print(f'Threshold: {selector.distance:.6g}; bounded chunks: {provenance["cap_or_end_limited_chunks"]}/{len(rows)}')
