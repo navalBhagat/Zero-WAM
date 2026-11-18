@@ -62,7 +62,7 @@ def specifications(a):
                     GUIDANCE_DECODER_DTYPE=dtype, GUIDANCE_SELECTION=selector,
                     GUIDANCE_MATCH_WINDOW=str(a.window), GUIDANCE_LOOKAHEAD=str(a.lookahead),
                     GUIDANCE_REFERENCE_FRAMES=str(a.fixed_frame), GUIDANCE_STRENGTH=str(a.strength),
-                    GUIDANCE_EVERY='10', GUIDANCE_MAX_NORM='1', GUIDANCE_REFERENCE_SOURCE='auto',
+                    GUIDANCE_EVERY='10', GUIDANCE_MAX_NORM='1', GUIDANCE_REFERENCE_SOURCE=a.reference_source,
                     CLIENT_TIMEOUT=str(a.client_timeout), EXPERIMENT_LABEL=label,
                     EXPERIMENT_STAGE=a.stage, EXPERIMENT_REPEAT=str(repeat),
                     EXPERIMENT_OUTPUT_ROOT=str(a.manifest.resolve().parent/'runs'))
@@ -207,6 +207,7 @@ def parser():
     p.add_argument('--max-lookahead-frames', type=int, default=24)
     p.add_argument('--fixed-frame', default='last', help='Zero-based RGB index or last')
     p.add_argument('--strength', type=float, default=.01)
+    p.add_argument('--reference-source', choices=['auto', 'video', 'latent'], default='auto')
     p.add_argument('--partition', default='gpu_a100')
     p.add_argument('--time', default=None, help='Wall limit per job; raise for multi-episode runs')
     p.add_argument('--client-timeout', type=int, default=None)
