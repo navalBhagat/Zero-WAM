@@ -30,6 +30,9 @@ Submit the small FP32 strength sweep with:
 
 ```bash
 sbatch experiments/jobs/strength_replay.sbatch
+
+# Extend the sweep using arguments passed directly to the job script.
+sbatch experiments/jobs/strength_replay.sbatch 0 0.1 0.3 1.0
 ```
 
 Defaults are the saved scale prediction from job 29419404, strengths **0, 0.01,

@@ -30,8 +30,13 @@ MODEL_PATH="${MODEL_PATH:-$ZERO_WAM_ROOT/checkpoints/zero-wam-posttrain-robotwin
 GUIDANCE_CHECKPOINT="${GUIDANCE_CHECKPOINT:-$ZERO_WAM_ROOT/checkpoints/dinov2-small}"
 OUTPUT="$ZERO_WAM_ROOT/experiments/strength_replay/job_${SLURM_JOB_ID}"
 
-# Override STRENGTHS to extend the sweep without editing this launcher.
-read -r -a REPLAY_STRENGTHS <<< "${STRENGTHS:-0 0.01 0.03 0.1}"
+# Arguments after the script path are strengths, e.g. sbatch ... 0 0.1 0.3 1.0.
+# Keep the environment override for existing callers; explicit arguments win.
+if (( $# > 0 )); then
+    REPLAY_STRENGTHS=("$@")
+else
+    read -r -a REPLAY_STRENGTHS <<< "${STRENGTHS:-0 0.01 0.03 0.1}"
+fi
 
 python experiments/scripts/precision_replay.py \
     --run "$CAPTURE_RUN" \
