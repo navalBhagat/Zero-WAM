@@ -36,7 +36,7 @@ def test_same_seed_launch_is_one_paired_distance_episode(tmp_path):
         GUIDANCE_REFERENCE_SOURCE="latent",
         GUIDANCE_MATCH_WINDOW="24",
         GUIDANCE_LOOKAHEAD="4",
-        GUIDANCE_STRENGTH="0.1",
+        GUIDANCE_STRENGTH="1.0",
         GUIDANCE_EVERY="10",
         RENDER_SAMPLES_PER_PIXEL="8",
         PHASE_SEPARATION="1",

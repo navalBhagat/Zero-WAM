@@ -7,7 +7,7 @@ import sys
 from experiments.paths import ROOT
 
 
-def command(manifest, submit=False, account=None, budget=None, strength=0.1):
+def command(manifest, submit=False, account=None, budget=None, strength=1.0):
     cmd = [
         sys.executable,
         str(ROOT / "experiments/scripts/robotwin_suite.py"),
@@ -70,9 +70,9 @@ def main():
     argument_parser.add_argument(
         "--manifest",
         type=Path,
-        default=ROOT / "experiments/stages/03_guidance_strength_010/manifest.json",
+        default=ROOT / "experiments/stages/03_guidance_strength_100/manifest.json",
     )
-    argument_parser.add_argument("--strength", type=float, default=0.1)
+    argument_parser.add_argument("--strength", type=float, default=1.0)
     argument_parser.add_argument("--account")
     argument_parser.add_argument("--budget-sbu", type=float)
     options = argument_parser.parse_args()
