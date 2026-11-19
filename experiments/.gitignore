@@ -4,3 +4,4 @@ stages/
 runs/
 precision/
 *.source.zip
+strength_replay/

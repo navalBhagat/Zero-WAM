@@ -104,7 +104,7 @@ cleanup() {
         wait "$MONITOR_PID" 2>/dev/null || true
     fi
     # Write partial timing even when startup/client fails. Timing writer uses stdlib only.
-    python3 "$ZERO_WAM_ROOT/experiments/scripts/job_timing.py" "$RUN_DIR/diagnostics/job_timing.json" \
+    python3 "$ZERO_WAM_ROOT/experiments/scripts/job_report.py" timing "$RUN_DIR/diagnostics/job_timing.json" \
       "$status" "$JOB_STARTED" "$SERVER_STARTED" "$SERVER_READY" \
       "$CLIENT_STARTED" "$CLIENT_FINISHED" "$(date +%s)" || true
     python3 -m evaluation.robotwin.run_metadata --refresh "$RUN_DIR/config.json" || true
@@ -156,14 +156,7 @@ echo "CONDA_PREFIX=${CONDA_PREFIX:-unset}"
 type -a python
 python -c "import sys; print('EXECUTABLE:', sys.executable, flush=True); print('PREFIX:', sys.prefix, flush=True)"
 export PYTHONPATH="$ZERO_WAM_ROOT:$ROBOTWIN_ROOT:${PYTHONPATH:-}"
-python - <<'PY'
-import evaluation.robotwin.eval_policy_client_openpi
-from evaluation.robotwin.test_render import Sapien_TEST
-# Call directly: __init__ catches errors and can exit with a success status.
-probe = Sapien_TEST.__new__(Sapien_TEST)
-probe.setup_scene()
-print("SAPIEN renderer initialization passed; rollout will test camera rendering.")
-PY
+python experiments/scripts/job_report.py preflight
 
 SERVER_STARTED=$(date +%s)
 # Separate subprocess environments, sharing the same allocated GPU and node.
@@ -200,20 +193,5 @@ timeout --kill-after=15s "${CLIENT_TIMEOUT}s" bash evaluation/robotwin/launch_cl
 CLIENT_FINISHED=$(date +%s)
 
 # Require the requested number of completed episodes, not just a partial file.
-python - "$RUN_DIR" "$TASK" "$TEST_NUM" <<'PY'
-import json
-import os
-import sys
-from pathlib import Path
-root, task, expected = Path(sys.argv[1]), sys.argv[2], int(sys.argv[3])
-config = json.loads((root/'config.json').read_text())
-completed = [e for e in config.get('episodes', []) if e.get('status') == 'completed']
-print(root/'results.csv')
-print(f"Completed {len(completed)}/{expected}; successes {sum(bool(e.get('success')) for e in completed)}")
-if len(completed) != expected:
-    raise SystemExit("Completed episode count differs from TEST_NUM; inspect diagnostics/client.log.")
-if os.environ.get("STAGE_REQUIRE_SUCCESS") == "1" and not all(e.get('success') for e in completed):
-    raise SystemExit("Stage-00 cup control did not succeed; dependent tests must not start.")
-
-PY
+python experiments/scripts/job_report.py complete "$RUN_DIR" "$TEST_NUM"
 echo "Evaluation finished. Results: $RUN_DIR"
