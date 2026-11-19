@@ -179,6 +179,11 @@ def main(argv=None):
         default=4,
         help="Maximum reference-frame advance per recorded robot chunk; experimental prior",
     )
+    argument_parser.add_argument(
+        "--robot-observation-dir",
+        type=Path,
+        help="Explicit extracted external-camera observations",
+    )
     argument_parser.add_argument("--temperature", type=float, default=0.05)
     argument_parser.add_argument(
         "--start-frame",
@@ -226,7 +231,25 @@ def main(argv=None):
         options.smoothing,
         options.max_lookahead_frames,
     )
+    source_records = {}
+    if (
+        options.robot_observation_dir
+        and (options.robot_observation_dir / "source.json").is_file()
+    ):
+        source_records = {
+            record["observation_id"]: record
+            for record in json.loads(
+                (options.robot_observation_dir / "source.json").read_text()
+            )["observations"]
+        }
     for i, (row, chunk) in enumerate(zip(rows, chunks)):
+        if chunk in source_records:
+            row.update(
+                {
+                    key: source_records[chunk][key]
+                    for key in ("video_frame", "action_count", "terminal")
+                }
+            )
         baseline = selector.select(chunk, similarities=scores[i].tolist())[0]
         import bisect
 
@@ -274,6 +297,15 @@ def main(argv=None):
     template += [dict(kind="robot", index=c, stage="") for c in chunks]
     write_csv(options.output / "labels_template.csv", template)
     provenance.update(
+        robot_observation_dir=str(options.robot_observation_dir)
+        if options.robot_observation_dir
+        else None,
+        observation_source=(
+            json.loads((options.robot_observation_dir / "source.json").read_text())
+            if options.robot_observation_dir
+            and (options.robot_observation_dir / "source.json").is_file()
+            else None
+        ),
         run=str(options.run.resolve()),
         episode=options.episode,
         device="cpu",

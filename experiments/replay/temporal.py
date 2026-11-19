@@ -138,7 +138,16 @@ def load_inputs(options, argument_parser):
     if episode.get("task", config.get("TASK")) != "place_object_scale":
         argument_parser.error("This phase is for place_object_scale")
     try:
-        chunks, image_paths = observation_trace(options.run, config, episode)
+        override = getattr(options, "robot_observation_dir", None)
+        if override is not None:
+            image_paths = sorted(override.glob("robot_chunk_*.png"))
+            chunks = [int(path.stem.rsplit("_", 1)[1]) for path in image_paths]
+            if not image_paths or chunks != sorted(set(chunks)):
+                raise ValueError(
+                    "Expected nonempty uniquely numbered robot_chunk_*.png images"
+                )
+        else:
+            chunks, image_paths = observation_trace(options.run, config, episode)
     except ValueError as error:
         argument_parser.error(str(error))
     if not (options.dino_checkpoint / "config.json").is_file():

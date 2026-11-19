@@ -140,3 +140,43 @@ through ambiguous images or hide a bad DINO representation. Broad intervals,
 wrong-stage nearest matches, or late targets during failed grasps are reasons to
 reject the candidate. Do not promote it to rollout guidance until labelled stage
 agreement improves and failed-grasp observations remain in the correct stage.
+
+## Successful same-seed ICL comparison
+
+```bash
+sbatch experiments/jobs/progress_matching_icl.sbatch
+```
+
+This is a CPU-only Rome job, using successful baseline job **29286681**, simulator
+seed 100000, sampling seed 1234, 8 samples/pixel, and the same human reference 086.
+It does not run the policy or simulator. It extracts the external camera from the
+historical 960x624 composite video (rectangle x=0:320, y=40:280). Other layouts
+are rejected. The extraction is video-compressed, unlike the failed-run PNGs.
+
+Output: `experiments/progress_matching_icl/job_<JOB_ID>/` contains:
+
+- `robot_frames/robot_chunk_*.png`: five chunk-start observations plus terminal
+  success, ready to annotate.
+- `robot_frames/source.json`: source video, crop, frame/action indices, terminal flag.
+- `analysis/`: the same diagnostic CSV, two figures, reference frames and labels template.
+
+Observation IDs 0..4 correspond to actions 0,16,48,80,112. ID 5 is terminal at
+action 131, not a sixth inference chunk. The extraction validates this specific
+baseline's 34-frame/131-action recording rather than guessing timing from FPS.
+
+Copy `analysis/labels_template.csv` to a separate ICL labels file. Reuse the human
+reference labels, but label these six robot images independently; **do not reuse
+the failed trajectory's robot labels**. Then submit another fresh job:
+
+```bash
+sbatch experiments/jobs/progress_matching_icl.sbatch \
+  --labels experiments/progress_matching_icl/labels.csv
+```
+
+Compare the labelled stage agreement and unconstrained DINO matches across success
+and failure. The current prior still permits only four reference frames per
+observation; over five transitions it cannot reach the placement stage (frame 41).
+That is a known speed-prior limitation, not evidence DINO cannot recognize success.
+Use the unconstrained scores to assess visual evidence first. Do not interpret
+this short successful rollout's constrained-path accuracy as a fair test of the
+prior without later calibrating the transition model on both trajectories.
