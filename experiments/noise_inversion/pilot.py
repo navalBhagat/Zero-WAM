@@ -28,12 +28,12 @@ def run_pilot(output: Path, tasks: list[str], sampling_seed: int, simulator_seed
                            NOISE_INVERSION_DIRECTORY=str(root))
         launch(root / "capture", task, dict(environment, USE_ICL="1", NOISE_INVERSION_MODE="capture"))
         source = read_episode(root / "capture")
-        summary = dict(task=task, source_success=source["success"],
+        summary = dict(task=task, replay_use_text=False, replay_use_icl=False, source_success=source["success"],
                        simulator_seed=source["simulator_seed"], sampling_seed=sampling_seed)
         if source["success"]:
-            result = infer(dict(invert_episode=str(root), prompt=source["task_instruction"]))
+            result = infer(dict(invert_episode=str(root)))
             summary["inversion"] = result["inversion"]
-            launch(root / "replay", task, dict(environment, USE_ICL="0", NOISE_INVERSION_MODE="replay"))
+            launch(root / "replay", task, dict(environment, USE_ICL="0", USE_TEXT="0", NOISE_INVERSION_MODE="replay"))
             replay = read_episode(root / "replay")
             summary.update(replay_success=replay["success"],
                            noise_sequence_exhausted=replay.get("noise_sequence_exhausted", False),

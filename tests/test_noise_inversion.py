@@ -63,7 +63,7 @@ class InversionTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 store.count()
 
-    def test_episode_inversion_rebuilds_only_past_text_only_history(self):
+    def test_episode_inversion_rebuilds_only_past_robot_history(self):
         import json
         module_name = parent.__name__ + ".modules.icl_model"
         module = types.ModuleType(module_name)
@@ -81,12 +81,15 @@ class InversionTests(unittest.TestCase):
 
         def reset(**kwargs):
             self.assertFalse(kwargs["use_icl"])
-            self.assertEqual(kwargs["target_text_source"], "instruction")
+            self.assertFalse(kwargs["use_text"])
+            self.assertEqual(kwargs["prompt"], "")
+            self.assertEqual(kwargs["target_text_source"], "empty")
             calls.append("reset")
 
         scheduler = types.SimpleNamespace(sigmas=torch.tensor([1., .5]),
             num_train_timesteps=1000, set_timesteps=lambda steps: None)
-        server = types.SimpleNamespace(_reset=reset, target_text_source="instruction",
+        server = types.SimpleNamespace(_reset=reset, target_text_source="empty",
+            use_text=False, use_icl=False, use_guidance=False,
             scheduler=scheduler, job_config=types.SimpleNamespace(num_inference_steps=2),
             device="cpu", transformer=Transformer(), cache_name="test",
             _prepare_icl_stream=lambda data, time, mode, cache: (mode, data))
@@ -103,7 +106,7 @@ class InversionTests(unittest.TestCase):
                     initial_frame=torch.zeros(1, 1, 1, 1, 1),
                     video=torch.zeros(1, 1, 2, 1, 1), action_noise=torch.ones(1))
             ChunkStore(root / "history").save(0, video=torch.zeros(1), actions=torch.ones(1))
-            report = runtime.invert_episode(server, directory, "instruction")
+            report = runtime.invert_episode(server, directory)
             self.assertEqual(report["relative_errors"], [0., 0.])
             self.assertEqual(ChunkStore(root / "inverted").count(), 2)
             self.assertTrue((root / "inversion.json").exists())
@@ -124,8 +127,11 @@ class InversionTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             ChunkStore(Path(directory) / "inverted").save(0, video_noise=torch.ones(1))
             server = types.SimpleNamespace(use_icl_model=True, use_icl=False,
-                use_guidance=False, use_text=True, target_text_source="instruction", chunk_idx=1)
+                use_guidance=False, use_text=False, target_text_source="empty", chunk_idx=1)
             result = namespace["infer"](server, dict(noise_replay_directory=directory))
+            server.use_text = True
+            with self.assertRaisesRegex(ValueError, "language, ICL"):
+                namespace["infer"](server, dict(noise_replay_directory=directory))
         self.assertEqual(result, dict(noise_exhausted=True))
 
     def test_velocity_cache_write_is_explicit(self):

@@ -32,7 +32,10 @@ class PilotTests(unittest.TestCase):
         events, summary = self.exercise(True)
         self.assertEqual([event[0] for event in events], ["capture", "invert", "replay"])
         self.assertEqual(events[0][1]["SAMPLING_SEED"], "1234")
+        self.assertEqual(events[0][1]["USE_TEXT"], "1")
         self.assertEqual(events[2][1]["USE_ICL"], "0")
+        self.assertEqual(events[2][1]["USE_TEXT"], "0")
+        self.assertNotIn("prompt", events[1][1])
         self.assertEqual(events[2][1]["USE_GUIDANCE"], "0")
         self.assertEqual(summary["simulator_seed"], 100002)
 

@@ -20,4 +20,11 @@ export SAMPLING_SEED="${SAMPLING_SEED:-1234}"
 export RENDER_SAMPLES_PER_PIXEL="${RENDER_SAMPLES_PER_PIXEL:-16}"
 export CLIENT_TIMEOUT="${CLIENT_TIMEOUT:-9000}"
 # Launch the existing environment/server lifecycle; the pilot runs both tasks.
-bash "$(dirname "${BASH_SOURCE[0]}")/eval.sbatch"
+# Slurm runs a spool copy, so BASH_SOURCE does not point into the checkout.
+export ZERO_WAM_ROOT="${ZERO_WAM_ROOT:-${SLURM_SUBMIT_DIR:-$PWD}}"
+EVAL_JOB="$ZERO_WAM_ROOT/experiments/jobs/eval.sbatch"
+if [[ ! -f "$EVAL_JOB" ]]; then
+    echo "Cannot find $EVAL_JOB. Submit from the repository root or set ZERO_WAM_ROOT to the checkout." >&2
+    exit 1
+fi
+exec bash "$EVAL_JOB"

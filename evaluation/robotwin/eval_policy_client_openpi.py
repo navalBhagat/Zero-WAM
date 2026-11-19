@@ -701,13 +701,13 @@ def eval_policy(task_name,
                         sampling_seed=int(os.environ.get("SAMPLING_SEED", "1234")),
                         target_text_source="empty", icl_text_source="cached")
                    if noise_mode == "capture" else
-                   dict(target_text_source="instruction", icl_text_source="target",
+                   dict(target_text_source="empty", icl_text_source="target",
                         sampling_seed=int(os.environ.get("SAMPLING_SEED", "1234")))
                    if noise_mode == "replay" else {}),
                 prompt=prompt,
                 save_visualization=save_visualization,
                 use_icl=args["use_icl"],
-                use_text=args["use_text"],
+                use_text=False if noise_mode == "replay" else args["use_text"],
                 use_guidance=args["use_guidance"],
                 icl_video_path=icl_video_path,
                 icl_latent_path=icl_latent_path,

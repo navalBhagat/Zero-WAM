@@ -1,4 +1,4 @@
-"""Server adapter: rebuild text-only history and invert recorded video chunks."""
+"""Server adapter: rebuild robot-only history and invert recorded video chunks."""
 import json
 import time
 from pathlib import Path
@@ -9,7 +9,7 @@ from .artifacts import ChunkStore
 from .solver import integrate, relative_error
 
 
-def invert_episode(server, directory: str, prompt: str) -> dict:
+def invert_episode(server, directory: str) -> dict:
     from ..modules.icl_model import OBSERVATION_CACHE_TYPE
 
     root = Path(directory)
@@ -21,11 +21,11 @@ def invert_episode(server, directory: str, prompt: str) -> dict:
     if output.count():
         raise FileExistsError("Inverted chunks already exist; choose a fresh pilot directory")
     started = time.perf_counter()
-    server._reset(prompt=prompt, use_icl=False, use_text=True, use_guidance=False,
+    server._reset(prompt="", use_icl=False, use_text=False, use_guidance=False,
                   video_guidance_scale=1.0, icl_guidance_scale=1.0,
-                  target_text_source="instruction", icl_text_source="target")
-    if server.target_text_source != "instruction":
-        raise ValueError("Inversion requires TARGET_TEXT_SOURCE=instruction")
+                  target_text_source="empty", icl_text_source="target")
+    if server.use_text or server.use_icl or server.use_guidance:
+        raise ValueError("Inversion requires language, ICL, and reward guidance disabled")
     server.scheduler.set_timesteps(server.job_config.num_inference_steps)
     descending = torch.cat([server.scheduler.sigmas, torch.zeros(1)])
     errors = []
@@ -54,6 +54,6 @@ def invert_episode(server, directory: str, prompt: str) -> dict:
                 server.transformer(payload, update_cache=1, cache_name=server.cache_name,
                                    mode=f"forward_{'latent' if mode == 'video' else 'action'}_only",
                                    clean_window_cache=mode == "action")
-    report = dict(chunks=count, relative_errors=errors, seconds=time.perf_counter() - started)
+    report = dict(use_text=False, use_icl=False, chunks=count, relative_errors=errors, seconds=time.perf_counter() - started)
     (root / "inversion.json").write_text(json.dumps(report, indent=2) + "\n")
     return report

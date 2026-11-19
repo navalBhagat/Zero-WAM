@@ -1,7 +1,7 @@
 # Noise inversion pilot
 
 One source episode per task (`place_bread_basket`, `place_object_scale`), followed
-by offline inversion and a closed-loop text-only replay if the source succeeds.
+by offline inversion and a closed-loop replay without language or ICL if the source succeeds.
 No training, DINO reward, or optimization through WAM is involved.
 
 ## Run
@@ -40,13 +40,14 @@ actual task success or GPU memory requirements.
 1. Capture: ICL scale 5, empty target text, cached human caption; reward off.
    Save generated video latents and initial video/action noise for every chunk.
    Save encoded camera observations and normalized actions for history updates.
-2. Inversion: reset without ICL; use the captured instruction, text scale 1.
-   Rebuild text-only KV history from recorded observation latents/actions. Reverse
+2. Inversion: reset without ICL or language, using empty text embeddings.
+   Rebuild robot-only KV history from recorded observation latents/actions. Reverse
    Euler integration uses the forward sampler's shifted sigma grid plus sigma 0.
-   Each chunk is forward-reconstructed under exactly the same text-only history.
+   Each chunk is forward-reconstructed under exactly the same robot-only history.
    No prediction cache is written during either numerical integration.
 3. Replay: reset the simulator to the source's actual accepted scene seed and
-   instruction. Use inverted video noise and original action noise per chunk;
+   instruction for simulator metadata only; language input to the model is disabled.
+   Use inverted video noise and original action noise per chunk;
    update history from this rollout's own observations and predicted actions.
 
 The first chunk's observed first frame is clamped at every step and excluded from
@@ -72,6 +73,6 @@ Under `OUTPUT/TASK/`:
 - `summary.json`: source/replay success, chunk counts, seeds, exhaustion status.
 
 Good reconstruction is a numerical check, not a guarantee of rollout success:
-text-only actions can differ even given similar videos, and replay history can
-then diverge. This pilot has no same-noise text-only baseline; it tests feasibility,
-not a measured improvement over text-only. A later experiment can add that control.
+Actions without language/ICL can differ even given similar videos, and replay history can
+then diverge. This pilot has no same-noise baseline without language/ICL; it tests feasibility,
+not a measured improvement over ordinary sampling without language/ICL. A later experiment can add that control.

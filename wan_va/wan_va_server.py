@@ -1514,7 +1514,7 @@ class VA_Server:
             if obs.get("invert_episode"):
                 from .noise_inversion.runtime import invert_episode
                 self.noise_capture_directory = None
-                return dict(inversion=invert_episode(self, obs["invert_episode"], prompt))
+                return dict(inversion=invert_episode(self, obs["invert_episode"]))
             if reset:
                 self.noise_capture_directory = obs.get("noise_capture_directory")
                 if self.noise_capture_directory and not self.job_config.video_state_fp32:
@@ -1547,8 +1547,8 @@ class VA_Server:
                 self._compute_icl_kv_cache(obs)
                 return dict()
             if obs.get("noise_replay_directory"):
-                if self.use_icl or self.use_guidance or not self.use_text or self.target_text_source != "instruction":
-                    raise ValueError("Noise replay requires instruction text with ICL and reward guidance disabled")
+                if self.use_icl or self.use_guidance or self.use_text:
+                    raise ValueError("Noise replay requires language, ICL, and reward guidance disabled")
                 from .noise_inversion.artifacts import ChunkStore
                 store = ChunkStore(Path(obs["noise_replay_directory"]) / "inverted")
                 if self.chunk_idx >= store.count():
