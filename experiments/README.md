@@ -312,3 +312,44 @@ valid-KV/metadata preservation and bounded physical storage. It does not load a
 checkpoint or certify CUDA numerics. CUDA transfer tests skip without a GPU. Stage
 00 is the required full-workload validation. Do not infer paper reproduction or
 success-rate improvement from these smoke tests.
+
+## Compact run outputs and operator FLOPs
+
+New evaluation runs keep `config.json`, one row per episode in `results.csv`,
+`videos/episode_000.mp4`, and `references/`. Logs, profiles, GPU monitoring,
+job timing, hardware information, and `flops.jsonl` live under `diagnostics/`.
+Legacy run folders remain readable. No existing results are migrated or deleted.
+Use `--diagnostics` for package inventories/action hashes/cache/offload traces,
+and `--capture-guidance` for one saved prediction suitable for gradient replay.
+
+Operator FLOP accounting is enabled by default (`COUNT_POLICY_FLOPS=1`);
+`--no-flop-count` disables it. It observes actual reset, observation/cache,
+video/action inference, and enabled text/ICL/guidance operations, including the
+frozen reward networks' backward-to-input operations. No transformer backward is
+introduced. Two FLOPs are assigned per multiply-add; elementwise, normalization,
+interpolation and other scalar costs use the conventions listed in the trace.
+Compiled FlexAttention retains its existing kernel and is assigned a dense
+attention matmul bound, not measured sparse-kernel work. Unknown float operators
+are listed explicitly. `policy_counted_tflops` is the covered subtotal;
+`policy_estimated_tflops` is populated only when there are no unmapped observed
+float operations. Neither is a hardware instruction count. Counting adds Python
+profiling overhead, so compare wall time with the same counting setting.
+
+`correction_base_percent_median` reports the median across guidance updates of
+`100 * applied_correction_norm / base_update_norm`. This is a video-latent update
+ratio, not a percentage action change. Clipping frequency is reported separately.
+
+For a small same-target strength diagnostic using an existing capture (GPU,
+VAE+DINO only; no WAM or simulator), run in the inference environment:
+
+```bash
+python experiments/scripts/precision_replay.py \
+  --run "$CAPTURE_RUN" --model "$MODEL_PATH" --dino "$GUIDANCE_CHECKPOINT" \
+  --decoder-dtypes float32 --strengths 0 0.01 0.03 0.1 --repeats 1 \
+  --output experiments/strength_replay/first_check
+```
+
+This tests finite corrections, clipping and same-target reward change; it does
+not establish action influence or task success. A subsequent rollout comparison
+must hold the scene, sampling seed, selector, conditioning and guidance frequency
+fixed. `--guidance-every 5` changes frequency independently of `--strength`.

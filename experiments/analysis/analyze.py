@@ -12,6 +12,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from experiments.analysis.compute import estimate as estimate_compute, records as compute_records
 from experiments.analysis import report
+from evaluation.robotwin.artifacts import find_artifact
 
 
 COMPONENTS = ['sampling', 'server_reset', 'cache_update', 'camera_render', 'planning',
@@ -91,9 +92,20 @@ def collect(manifest, runs_root, model_config=None):
                     spp=int(env['RENDER_SAMPLES_PER_PIXEL']), selector=env['GUIDANCE_SELECTION'],
                     decoder_dtype=env['GUIDANCE_DECODER_DTYPE'])
         config = read(folder/'config.json', {})
-        timing = read(folder/'job_timing.json', {})
+        timing = read(find_artifact(folder, 'job_timing.json'), {})
         estimates = estimate_compute(folder, config, model_config)
-        reset_profiles = compute_records(folder/'server.log', '[reset-profile]')
+        reset_profiles = compute_records(find_artifact(folder, 'server.log'), '[reset-profile]')
+        ratios_by_episode=defaultdict(list)
+        ordinal=-1
+        log_path=find_artifact(folder,'server.log')
+        for line in log_path.read_text(errors='replace').splitlines() if log_path.is_file() else []:
+            if '[conditioning]' in line: ordinal+=1
+            if '[external-guidance]' in line:
+                try:
+                    entry=ast.literal_eval(line.split('[external-guidance]',1)[1].strip())
+                    if isinstance(entry,dict) and entry.get('base_update_norm',0)>0:
+                        ratios_by_episode[ordinal].append(100*entry['applied_correction_norm']/entry['base_update_norm'])
+                except (ValueError,SyntaxError,KeyError): pass
         requested = int(env['TEST_NUM'])
         completed = [e for e in config.get('episodes', []) if e.get('status') == 'completed']
         run = dict(base, episode_offset=int(env.get('EPISODE_OFFSET', 0)),
@@ -135,11 +147,14 @@ def collect(manifest, runs_root, model_config=None):
                 row['camera_hooks'] = json.dumps({k:v for k,v in profile.get('hooks', {}).items()
                                                 if 'camera' in k or 'physics' in k})
             row.update(estimates.get(episode['episode_id'], {}))
+            ratios=ratios_by_episode[config['episodes'].index(episode)]
+            if ratios and row.get('correction_base_percent_median') is None:
+                row['correction_base_percent_median']=statistics.median(ratios)
             if row.get('chunks') and episode.get('server', {}).get('video_inference_steps') is not None:
                 expected = row['chunks']*(episode['server']['video_inference_steps']+1)
                 recorded = row.get('sampling_video_calls', 0)
                 row['compute_sampling_log_coverage'] = min(1., recorded/expected)
-                if recorded != expected:
+                if recorded != expected and not row.get('operator_counting_available'):
                     row['compute_status'] = row.get('compute_status', 'unavailable')+'; incomplete_sampling_logs'
             if row.get('transformer_core_linear_tflops') is not None and row.get('chunks'):
                 row['transformer_core_linear_tflops_per_chunk'] = row['sampling_transformer_core_linear_tflops']/row['chunks']
@@ -156,8 +171,8 @@ def collect(manifest, runs_root, model_config=None):
         run['profiled_episode_seconds'] = sum(profiled)
         run['client_outside_episode_seconds'] = (max(0,timing['client_seconds']-sum(profiled))
                                                 if timing.get('client_seconds') is not None else None)
-        if (folder/'gpu.csv').is_file():
-            with (folder/'gpu.csv').open() as stream:
+        if (find_artifact(folder, 'gpu.csv')).is_file():
+            with (find_artifact(folder, 'gpu.csv')).open() as stream:
                 samples=list(csv.DictReader(stream,skipinitialspace=True))
             for column,target,operation in [('memory.used [MiB]','gpu_peak_used_mib',max),
                                             ('utilization.gpu [%]','gpu_mean_utilization',statistics.mean)]:
@@ -167,7 +182,7 @@ def collect(manifest, runs_root, model_config=None):
                     except (ValueError,TypeError,IndexError): pass
                 run[target]=operation(numbers) if numbers else None
         for marker, target in [('[inference-profile]', chunks), ('[external-guidance]', guidance)]:
-            for i, entry in enumerate(log_records(folder/'server.log', marker)):
+            for i, entry in enumerate(log_records(find_artifact(folder, 'server.log'), marker)):
                 target.append(dict(base, call=i, **entry))
     return runs, episodes, chunks, guidance
 
@@ -345,7 +360,10 @@ def main():
                 if result.returncode: print('WARNING: sacct failed; see diagnostics/sacct.txt')
                 else: write_csv(detail/'accounting.csv',accounting_from_sacct(result.stdout,manifest['estimate']['sbu_per_hour']))
     print(f'Outputs: {output}/results.csv, success.png, cost.png')
-    print('FLOPs are a partial transformer subtotal, not a full guidance-versus-ICL compute comparison.')
+    if any(e.get('operator_counting_available') for e in episodes):
+        print('Operator FLOPs include executed forward/backward paths; inspect coverage and dense-attention assumptions.')
+    else:
+        print('Historical FLOPs are a partial transformer subtotal; full operator counts were not recorded.')
 
 
 if __name__=='__main__': main()

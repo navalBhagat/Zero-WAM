@@ -4,6 +4,7 @@ import torch.nn.functional as F
 
 from .reference import decode_normalized
 from .selection import validate_frames
+from .flops import flop_component
 
 
 class DinoReward:
@@ -25,6 +26,7 @@ class DinoReward:
         self.reference_images = None
         self.selected_frames = None
 
+    @flop_component("dino_forward")
     def features(self, frames):
         from .instrumentation import record_reward_component
         record_reward_component(self, 'dino_features', frames)
@@ -80,6 +82,7 @@ class DinoReward:
             paths.append(str(path.resolve()))
         return paths
 
+    @flop_component("reward_vae_decode")
     def decode(self, clean):
         from .instrumentation import record_reward_component
         record_reward_component(self, 'reward_vae_decode', clean)

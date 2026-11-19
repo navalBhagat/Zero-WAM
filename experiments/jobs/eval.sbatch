@@ -43,6 +43,9 @@ export GUIDANCE_REFERENCE_SOURCE="${GUIDANCE_REFERENCE_SOURCE:-auto}"
 export GUIDANCE_DECODER_DTYPE="${GUIDANCE_DECODER_DTYPE:-float32}"
 export VIDEO_STATE_FP32="${VIDEO_STATE_FP32:-1}"
 export PROFILE_TIMING="${PROFILE_TIMING:-1}"
+export COUNT_POLICY_FLOPS="${COUNT_POLICY_FLOPS:-1}"
+export RUN_DIAGNOSTICS="${RUN_DIAGNOSTICS:-0}"
+export SAVE_GUIDANCE_CAPTURE="${SAVE_GUIDANCE_CAPTURE:-0}"
 export PROFILE_SYNC_GPU="${PROFILE_SYNC_GPU:-0}"
 export MONITOR_GPU="${MONITOR_GPU:-1}"
 export RENDER_SAMPLES_PER_PIXEL="${RENDER_SAMPLES_PER_PIXEL:-32}"
@@ -72,18 +75,20 @@ case "$TASK" in
     *) echo "Not one of the seven unseen tasks: $TASK"; exit 1 ;;
 esac
 RUN_DIR="${EXPERIMENT_OUTPUT_ROOT:-$ZERO_WAM_ROOT/experiments/runs}/${TASK}_${SLURM_JOB_ID}"
-mkdir -p "$RUN_DIR"
+mkdir -p "$RUN_DIR/diagnostics"
 # ICL serving does not write latent dumps. Reuse the run root rather than
 # creating an empty generated/ directory.
 export SAVE_ROOT="$RUN_DIR"
 # One replayable actual prediction, with its selected reference metadata.
-if [[ "${USE_GUIDANCE}" == "1" ]]; then
-    export GUIDANCE_CAPTURE="$RUN_DIR/capture_step.pt"
+if [[ "${USE_GUIDANCE}" == "1" && "${SAVE_GUIDANCE_CAPTURE}" == "1" ]]; then
+    export GUIDANCE_CAPTURE="$RUN_DIR/diagnostics/capture_step.pt"
+else
+    unset GUIDANCE_CAPTURE
 fi
 export TASK
 cd "$ZERO_WAM_ROOT"
 python3 -m evaluation.robotwin.run_metadata "$RUN_DIR/config.json"
-python3 -m pip freeze > "$RUN_DIR/bootstrap_packages.txt"
+if [[ "$RUN_DIAGNOSTICS" == "1" ]]; then python3 -m pip freeze > "$RUN_DIR/diagnostics/bootstrap_packages.txt"; fi
 # Record memory/utilization throughout setup, model loading, and evaluation.
 MONITOR_PID=""
 SERVER_PID=""
@@ -99,9 +104,10 @@ cleanup() {
         wait "$MONITOR_PID" 2>/dev/null || true
     fi
     # Write partial timing even when startup/client fails. Timing writer uses stdlib only.
-    python3 "$ZERO_WAM_ROOT/experiments/scripts/job_timing.py" "$RUN_DIR/job_timing.json" \
+    python3 "$ZERO_WAM_ROOT/experiments/scripts/job_timing.py" "$RUN_DIR/diagnostics/job_timing.json" \
       "$status" "$JOB_STARTED" "$SERVER_STARTED" "$SERVER_READY" \
       "$CLIENT_STARTED" "$CLIENT_FINISHED" "$(date +%s)" || true
+    python3 -m evaluation.robotwin.run_metadata --refresh "$RUN_DIR/config.json" || true
     exit "$status"
 }
 trap cleanup EXIT
@@ -115,12 +121,12 @@ fi
 test -f "$ROBOTWIN_ROOT/policy/ACT/deploy_policy.yml"
 command -v curl >/dev/null
 nvidia-smi
-nvidia-smi -q > "$RUN_DIR/gpu_hardware.txt"
+nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv > "$RUN_DIR/diagnostics/hardware.csv"
 
 
 if [[ "$MONITOR_GPU" == "1" ]]; then
     nvidia-smi --query-gpu=timestamp,index,memory.used,memory.total,utilization.gpu --format=csv -l 2 \
-        > "$RUN_DIR/gpu.csv" &
+        > "$RUN_DIR/diagnostics/gpu.csv" &
     MONITOR_PID=$!
 fi
 
@@ -144,7 +150,7 @@ source activate robotwin
 # Module Python can precede an inherited active Conda environment.
 export PATH="${CONDA_PREFIX:?Environment activation failed}/bin:$PATH"
 hash -r
-python -m pip freeze > "$RUN_DIR/client_packages.txt"
+if [[ "$RUN_DIAGNOSTICS" == "1" ]]; then python -m pip freeze > "$RUN_DIR/diagnostics/client_packages.txt"; fi
 # Show the interpreter selected inside the compute job before client imports.
 echo "CONDA_PREFIX=${CONDA_PREFIX:-unset}"
 type -a python
@@ -166,20 +172,20 @@ SERVER_STARTED=$(date +%s)
     # Module Python can precede an inherited active Conda environment.
     export PATH="${CONDA_PREFIX:?Environment activation failed}/bin:$PATH"
     hash -r
-    python -m pip freeze > "$RUN_DIR/server_packages.txt"
+    if [[ "$RUN_DIAGNOSTICS" == "1" ]]; then python -m pip freeze > "$RUN_DIR/diagnostics/server_packages.txt"; fi
     exec bash evaluation/robotwin/launch_server.sh
-) > "$RUN_DIR/server.log" 2>&1 &
+) > "$RUN_DIR/diagnostics/server.log" 2>&1 &
 SERVER_PID=$!
 
 deadline=$((SECONDS + ${SERVER_STARTUP_TIMEOUT:-1800}))
 until curl --noproxy '*' --fail --silent --max-time 2 "http://127.0.0.1:$PORT/healthz" >/dev/null; do
     if ! kill -0 "$SERVER_PID" 2>/dev/null; then
-        echo "Server exited. See $RUN_DIR/server.log"
-        tail -n 40 "$RUN_DIR/server.log"
+        echo "Server exited. See $RUN_DIR/diagnostics/server.log"
+        tail -n 40 "$RUN_DIR/diagnostics/server.log"
         exit 1
     fi
     if (( SECONDS >= deadline )); then
-        echo "Server startup timed out. See $RUN_DIR/server.log"
+        echo "Server startup timed out. See $RUN_DIR/diagnostics/server.log"
         exit 1
     fi
     sleep 5
@@ -189,7 +195,7 @@ SERVER_READY=$(date +%s)
 CLIENT_STARTED=$(date +%s)
 echo "Server ready. Evaluating $TASK for $TEST_NUM episode(s). Results: $RUN_DIR"
 timeout --kill-after=15s "${CLIENT_TIMEOUT}s" bash evaluation/robotwin/launch_client.sh "$RUN_DIR" "$TASK" \
-    2>&1 | tee "$RUN_DIR/client.log"
+    2>&1 | tee "$RUN_DIR/diagnostics/client.log"
 
 CLIENT_FINISHED=$(date +%s)
 
@@ -200,15 +206,13 @@ import os
 import sys
 from pathlib import Path
 root, task, expected = Path(sys.argv[1]), sys.argv[2], int(sys.argv[3])
-files = list(root.glob(f"stseed-*/metrics/{task}/res.json"))
-if len(files) != 1:
-    raise SystemExit("Expected one metrics file. Inspect client.log; evaluation is incomplete.")
-metrics = json.loads(files[0].read_text())
-print(files[0])
-print(json.dumps(metrics, indent=2))
-if metrics["total_num"] != expected:
-    raise SystemExit("Completed episode count differs from TEST_NUM; evaluation is incomplete.")
-if os.environ.get("STAGE_REQUIRE_SUCCESS") == "1" and metrics["succ_num"] != expected:
+config = json.loads((root/'config.json').read_text())
+completed = [e for e in config.get('episodes', []) if e.get('status') == 'completed']
+print(root/'results.csv')
+print(f"Completed {len(completed)}/{expected}; successes {sum(bool(e.get('success')) for e in completed)}")
+if len(completed) != expected:
+    raise SystemExit("Completed episode count differs from TEST_NUM; inspect diagnostics/client.log.")
+if os.environ.get("STAGE_REQUIRE_SUCCESS") == "1" and not all(e.get('success') for e in completed):
     raise SystemExit("Stage-00 cup control did not succeed; dependent tests must not start.")
 
 PY

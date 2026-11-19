@@ -4,6 +4,7 @@ Persistent latent arithmetic and DINO remain FP32. No transformer/simulator load
 Reward changes measure the local stop-gradient surrogate, not episode success.
 """
 import argparse
+import csv
 import json
 from pathlib import Path
 import sys
@@ -19,10 +20,12 @@ def main():
     p.add_argument('--reference',type=Path,help='Override cached human latent path, e.g. after moving results')
     p.add_argument('--frames',help='Override comma-separated zero-based decoded reference frame indices')
     p.add_argument('--strengths',nargs='+',type=float,default=[.001,.01,.1,1.])
+    p.add_argument('--decoder-dtypes',nargs='+',choices=['float32','float16'],default=['float32','float16'])
     p.add_argument('--repeats',type=int,default=3)
     p.add_argument('--output',type=Path,required=True)
     a=p.parse_args()
-    if a.repeats<1 or not a.strengths or any(s<=0 for s in a.strengths): p.error('Use positive strengths/repeats')
+    import math
+    if a.repeats<1 or not a.strengths or any(not math.isfinite(s) or s<0 for s in a.strengths): p.error('Use nonnegative finite strengths and positive repeats')
     if a.output.exists(): p.error('Choose a new output directory')
     import torch
     from wan_va.modules.utils import load_vae, resolve_model_component
@@ -32,7 +35,8 @@ def main():
     from wan_va.guidance.selection import validate_frames
     if not torch.cuda.is_available(): p.error('Run on a CUDA compute node with zerowam active')
     torch.backends.cuda.matmul.allow_tf32=False; torch.backends.cudnn.allow_tf32=False
-    capture=torch.load(a.run/'capture_step.pt',map_location='cuda',weights_only=True)
+    from evaluation.robotwin.artifacts import find_artifact
+    capture=torch.load(find_artifact(a.run, 'capture_step.pt'),map_location='cuda',weights_only=True)
     config=json.loads((a.run/'config.json').read_text())
     captured_rgb=capture.get('reference_rgb') if not a.reference and not a.frames else None
     reference=a.reference or Path(config['episodes'][0]['selected_reference']['latent'] or '')
@@ -46,7 +50,7 @@ def main():
     if observed is not None: observed=observed.float()
     a.output.mkdir(parents=True)
     rows=[]
-    for dtype_name in ('float32','float16'):
+    for dtype_name in a.decoder_dtypes:
         vae=load_vae(resolve_model_component(a.model,'vae'),torch_dtype=torch.float32,torch_device='cuda')
         reward=DinoReward(vae,a.dino,torch.device('cuda'),decoder_dtype=getattr(torch,dtype_name))
         if captured_rgb is not None:
@@ -69,6 +73,11 @@ def main():
                 try:
                     torch.cuda.synchronize(); torch.cuda.reset_peak_memory_stats(); started=time.perf_counter()
                     corrected,stats=guided_step(**step,reward_fn=reward_fn,strength=strength,max_norm=1.)
+                    if strength==0:
+                        stats=dict(reward=reward_fn(clean).item(),gradient_norm=None,
+                            correction_norm=0.,applied_correction_norm=0.,changed_fraction=0.,
+                            correction_base_percent=0.,gradient_clipped=False,
+                            base_update_norm=(step['base_next']-step['sample']).norm().item())
                     with torch.no_grad(): after=reward_fn(clean+(corrected-step['base_next'])).item()
                     torch.cuda.synchronize()
                     if not torch.isfinite(torch.tensor(after)): raise FloatingPointError('Non-finite post-correction reward')
@@ -84,7 +93,10 @@ def main():
                     definition='Only reward VAE decoder changes precision. Latents and DINO are FP32.',
                     measurements=rows),indent=2)+'\n')
         del reward,vae,clean; torch.cuda.empty_cache()
-    print(f'Results: {a.output}/precision.json. Plot using experiments/analysis/plot_precision.py')
+    columns=list(dict.fromkeys(k for row in rows for k in row))
+    with (a.output/'results.csv').open('w',newline='') as stream:
+        writer=csv.DictWriter(stream,fieldnames=columns);writer.writeheader();writer.writerows(rows)
+    print(f'Results: {a.output}/results.csv and precision.json. Plot using experiments/analysis/plot_precision.py')
 
 
 if __name__=='__main__': main()

@@ -37,29 +37,32 @@ def mock_cuda(monkeypatch):
 
 
 def test_restore_and_cache_identity_and_dtype(tmp_path,monkeypatch):
+    monkeypatch.setenv('RUN_DIAGNOSTICS','1')
     mock_cuda(monkeypatch);s=server(tmp_path)
     original=phase.cache_state(s.transformer)[0]
     value=phase.encode_with_phase_separation(s,lambda obs:obs+1,2,'observation_update')
     assert value==3 and s.transformer.moves==['cpu','cpu']
     assert phase.cache_state(s.transformer)[0]==original
     assert s.transformer.freq.dtype==s.transformer.linear.weight.dtype==torch.bfloat16
-    row=json.loads((tmp_path/'phase_separation.jsonl').read_text())
+    row=json.loads((tmp_path/'diagnostics/phase_separation.jsonl').read_text())
     assert row['status']=='encoded' and row['kv_and_metadata_bytes']>0
 
 
 def test_encoding_exception_still_restores_and_logs(tmp_path,monkeypatch):
+    monkeypatch.setenv('RUN_DIAGNOSTICS','1')
     mock_cuda(monkeypatch);s=server(tmp_path)
     def fail(_):raise RuntimeError('encoding failed')
     with pytest.raises(RuntimeError,match='encoding failed'):
         phase.encode_with_phase_separation(s,fail,None,'observation_update')
     assert s.transformer.moves==['cpu','cpu']
-    assert json.loads((tmp_path/'phase_separation.jsonl').read_text())['status']=='failed'
+    assert json.loads((tmp_path/'diagnostics/phase_separation.jsonl').read_text())['status']=='failed'
 
 
 def test_disabled_is_original_call_and_control_never_moves(tmp_path,monkeypatch):
+    monkeypatch.setenv('RUN_DIAGNOSTICS','1')
     mock_cuda(monkeypatch);s=server(tmp_path);s.phase_separation=False
     assert phase.encode_with_phase_separation(s,lambda x:x,4,'obs')==4
-    assert not s.transformer.moves and not (tmp_path/'phase_separation.jsonl').exists()
+    assert not s.transformer.moves and not (tmp_path/'diagnostics/phase_separation.jsonl').exists()
     s.phase_separation=True;s.phase_offload_transformer=False
     assert phase.encode_with_phase_separation(s,lambda x:x,4,'obs')==4
     assert not s.transformer.moves

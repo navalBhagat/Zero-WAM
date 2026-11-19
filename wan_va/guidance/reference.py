@@ -4,6 +4,7 @@ from contextlib import contextmanager
 import torch
 
 from .latent_guidance import isolated_decode_cache
+from .flops import flop_component
 
 
 def reshape_latent(latent, item):
@@ -53,6 +54,7 @@ def decoder_on_cpu(vae):
 
 
 @torch.no_grad()
+@flop_component("reference_vae_decode")
 def reconstructed_reference(vae, path, start=0, stop=None):
     """Select decoded RGB frames; HumanGen latents are already normalized.
 

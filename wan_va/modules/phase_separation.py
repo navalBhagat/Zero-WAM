@@ -4,6 +4,7 @@ KV dictionaries/metadata stay on GPU. Registered parameters and buffers move to
 CPU then back without changing dtype. Requires an unsharded frozen transformer.
 """
 import json
+import os
 import logging
 from pathlib import Path
 import time
@@ -87,9 +88,11 @@ def encode_with_phase_separation(server, function, observation, phase):
         finally:
             row['total_seconds'] = time.perf_counter()-started
             logger.info('[phase-separation] %s',row)
-            output = Path(server.save_root)/'phase_separation.jsonl'
-            with output.open('a') as stream:
-                stream.write(json.dumps(row)+'\n')
+            if os.environ.get('RUN_DIAGNOSTICS', '0') == '1':
+                output = Path(server.save_root)/'diagnostics'/'phase_separation.jsonl'
+                output.parent.mkdir(parents=True, exist_ok=True)
+                with output.open('a') as stream:
+                    stream.write(json.dumps(row)+'\n')
     return encoded
 
 

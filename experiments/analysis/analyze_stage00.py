@@ -8,6 +8,7 @@ import sys
 ROOT=Path(__file__).resolve().parents[2]
 sys.path.insert(0,str(ROOT))
 from experiments.analysis.analyze import write_csv,log_records
+from evaluation.robotwin.artifacts import find_artifact
 
 
 def jsonlines(path):
@@ -23,13 +24,13 @@ def main():
         root=a.runs_root or Path(run['environment']['EXPERIMENT_OUTPUT_ROOT'])
         folder=root/f'{run["task"]}_{run.get("job_id")}'
         config=json.loads((folder/'config.json').read_text()) if (folder/'config.json').exists() else {}
-        timing=json.loads((folder/'job_timing.json').read_text()) if (folder/'job_timing.json').exists() else {}
+        timing=json.loads((find_artifact(folder, 'job_timing.json')).read_text()) if (find_artifact(folder, 'job_timing.json')).exists() else {}
         episodes=config.get('episodes',[])
-        records=jsonlines(folder/'phase_separation.jsonl')
-        hashes[run['label']]=jsonlines(folder/'phase_actions.jsonl')
+        records=jsonlines(find_artifact(folder, 'phase_separation.jsonl'))
+        hashes[run['label']]=jsonlines(find_artifact(folder, 'phase_actions.jsonl'))
         updates=[r for r in records if r['phase']=='observation_update' and r['status']=='encoded']
-        sampling=log_records(folder/'server.log','[inference-profile]')
-        cache=jsonlines(folder/'cache_memory.jsonl')
+        sampling=log_records(find_artifact(folder, 'server.log'),'[inference-profile]')
+        cache=jsonlines(find_artifact(folder, 'cache_memory.jsonl'))
         door=[r for path in sorted((folder/'diagnostics').glob('microwave_episode_*.jsonl'))
               for r in jsonlines(path)]
         door_rows.extend(dict(label=run['label'],**r) for r in door)

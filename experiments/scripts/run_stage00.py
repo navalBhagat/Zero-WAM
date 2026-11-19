@@ -39,7 +39,7 @@ def main():
             EXPERIMENT_LABEL=label,EXPERIMENT_STAGE=stage,
             EXPERIMENT_OUTPUT_ROOT=str(manifest.parent/'runs'),PHASE_SEPARATION='1',
             PHASE_OFFLOAD_TRANSFORMER='1',COMPACT_OBSERVATION_CACHE=str(int(compact)),SAVE_ROLLOUT_SNAPSHOTS='1',STAGE_REQUIRE_SUCCESS=str(int(task=='place_empty_cup')),
-            PROFILE_TIMING='1',PROFILE_SYNC_GPU='0')
+            PROFILE_TIMING='1',PROFILE_SYNC_GPU='0',RUN_DIAGNOSTICS='1')
         runs.append(spec)
     data=dict(schema_version=1,stage=stage,submitted=a.submit,runs=runs,
               estimate=dict(episodes=len(runs),sbu_per_hour=128,

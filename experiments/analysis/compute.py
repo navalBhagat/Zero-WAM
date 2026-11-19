@@ -6,6 +6,7 @@ policy compute: VAE, DINO backward, conditioning, embedding, norms, MCP, etc.
 are deliberately not silently assigned zero cost.
 """
 import ast
+from evaluation.robotwin.artifacts import find_artifact
 import json
 from pathlib import Path
 
@@ -51,7 +52,7 @@ def legacy_workloads(folder, config, architecture=None):
     episodes = {int(e['episode_id']): e for e in metadata}
     ordinal = -1
     result = []
-    for line in (folder/'server.log').read_text(errors='replace').splitlines() if (folder/'server.log').is_file() else []:
+    for line in (find_artifact(folder, 'server.log')).read_text(errors='replace').splitlines() if (find_artifact(folder, 'server.log')).is_file() else []:
         if '[conditioning]' in line: ordinal += 1
         if '[ICL] cache after infer:' not in line: continue
         try: counts = ast.literal_eval(line.split('[ICL] cache after infer:', 1)[1].strip())
@@ -85,7 +86,7 @@ def legacy_workloads(folder, config, architecture=None):
 def guidance_activity(folder, config):
     ordinal = -1
     activity = {}
-    path = folder/'server.log'
+    path = find_artifact(folder, 'server.log')
     for line in path.read_text(errors='replace').splitlines() if path.is_file() else []:
         if '[conditioning]' in line: ordinal += 1
         if '[external-guidance]' not in line or ordinal < 0: continue
@@ -97,7 +98,7 @@ def guidance_activity(folder, config):
 
 
 def estimate(folder, config, model_config=None):
-    workload = records(folder/'server.log', '[compute-workload]')
+    workload = records(find_artifact(folder, 'server.log'), '[compute-workload]')
     measured = bool(workload)
     architecture = None
     if model_config:
@@ -105,6 +106,12 @@ def estimate(folder, config, model_config=None):
     if not workload:
         workload = legacy_workloads(folder, config, architecture)
     activity = guidance_activity(folder, config)
+    full_records={}
+    flop_path=folder/'diagnostics/flops.jsonl'
+    if flop_path.is_file():
+        for line in flop_path.read_text().splitlines():
+            r=json.loads(line)
+            full_records[r['episode']]=r['cumulative']
     output = {}
     for ordinal, episode in enumerate(config.get('episodes', [])):
         rows = [w for w in workload if w.get('episode')==ordinal]
@@ -136,4 +143,19 @@ def estimate(folder, config, model_config=None):
             compute_omissions='VAE encode/decode and backward; DINO forward/backward; prompt/conditioning; MCP; embeddings; norms; sparse attention execution',
             sampling_video_calls=sampling_calls,
             recorded_transformer_calls=sum(w['calls'] for r in rows for w in r['transformer']))
+        full=episode.get('compute') or full_records.get(ordinal)
+        if full:
+            row=output[episode['episode_id']]
+            covered=full.get('counted_flops')
+            known=full.get('status')=='estimated_all_observed_ops' and not full.get('unsupported_ops')
+            row.update(policy_counted_tflops=covered/1e12 if covered is not None else None,
+                total_policy_tflops=covered/1e12 if known and covered is not None else None,
+                policy_backward_tflops=full.get('components_flops',{}).get('guidance_backward',0)/1e12,
+                compute_status=full.get('status','unavailable'),
+                compute_scope=full.get('scope','all observed policy requests'),
+                compute_assumptions='; '.join(full.get('approximations',[])),
+                compute_omissions='; '.join(sorted(full.get('unsupported_ops',{}))) or 'No unmapped observed float ops; counts remain mathematical estimates',
+                correction_base_percent_median=full.get('correction_base_percent_median'),
+                clipped_corrections=full.get('clipped_corrections'),
+                operator_counting_available=True)
     return output

@@ -39,7 +39,8 @@ def results(runs, episodes, wilson):
             compute_omissions='VAE/DINO forward and backward, conditioning/MCP, attention execution and other operators',
             total_policy_tflops=None)
         for key in ('wall_seconds', 'preparation_seconds', 'rollout_seconds', 'actions', 'chunks',
-                    'sampling_seconds_per_chunk', 'transformer_core_linear_tflops',
+                    'sampling_seconds_per_chunk', 'policy_counted_tflops', 'total_policy_tflops',
+                    'policy_backward_tflops', 'correction_base_percent_median', 'clipped_corrections', 'transformer_core_linear_tflops',
                     'transformer_dense_attention_tflops', 'transformer_core_linear_tflops_per_chunk',
                     'compute_sampling_log_coverage', 'guidance_updates', 'reward_decoder_forwards', 'reward_dino_forwards',
                     'reward_backward_passes', 'reference_frames'):
@@ -48,6 +49,9 @@ def results(runs, episodes, wilson):
             row[key+'_n'] = len(xs)
         peaks = [r['gpu_peak_used_mib'] for r in jobs if r.get('gpu_peak_used_mib') is not None]
         row['gpu_peak_used_gib'] = max(peaks)/1024 if peaks else None
+        row['total_policy_tflops']=row.get('total_policy_tflops_mean') if row.get('total_policy_tflops_n')==n and n else None
+        row['compute_scope']='; '.join(sorted({e.get('compute_scope','unavailable') for e in values}))
+        row['compute_omissions']='; '.join(sorted({e.get('compute_omissions','unavailable') for e in values}))
         row['compute_status'] = '; '.join(sorted({e.get('compute_status','unavailable') for e in values})) or 'unavailable'
         row['compute_assumptions'] = '; '.join(sorted({e['compute_assumptions'] for e in values if e.get('compute_assumptions')}))
         row['reset_subtiming_episodes'] = sum(bool(e.get('reset_components_seconds')) for e in values)
@@ -89,7 +93,8 @@ def plots(output, rows):
         ax.set(title=task.replace('_',' '), ylabel='Success (%)', ylim=(0,115), yticks=[0,20,40,60,80,100])
     fig.suptitle('Completed episodes · counts and descriptive 95% intervals')
     fig.savefig(output/'success.png', dpi=170); plt.close(fig)
-    fig, axes = plt.subplots(1, len(tasks), figsize=(max(7,len(tasks)*5),4.8), squeeze=False, layout='constrained')
+    compute_available=all(r.get('total_policy_tflops') is not None for r in rows)
+    fig, axes = plt.subplots(2 if compute_available else 1, len(tasks), figsize=(max(7,len(tasks)*5),8 if compute_available else 4.8), squeeze=False, layout='constrained')
     max_minutes=max(((r.get('preparation_seconds_mean') or 0)+(r.get('rollout_seconds_mean') or 0))/60 for r in rows)
     for ax, task in zip(axes[0],tasks):
         group=[r for r in rows if r['task']==task]
@@ -102,6 +107,12 @@ def plots(output, rows):
         ax.set_xticks(range(len(group)),[r['condition'].replace('_','\n') for r in group])
         ax.set(title=task.replace('_',' '),ylabel='Mean minutes per completed episode', ylim=(0,max(1,max_minutes*1.3)))
         ax.legend(fontsize=8,loc='upper left')
+    if compute_available:
+        for ax,task in zip(axes[1],tasks):
+            group=[r for r in rows if r['task']==task]
+            ax.bar(range(len(group)),[r['total_policy_tflops'] for r in group],color='steelblue')
+            ax.set_xticks(range(len(group)),[r['condition'].replace('_','\n') for r in group])
+            ax.set(ylabel='Estimated policy TFLOPs / episode',title='Operator accounting · dense attention convention')
     fig.suptitle('Measured time · preparation separated from rollout')
     fig.savefig(output/'cost.png',dpi=170);plt.close(fig)
     # No compute panel: partial transformer counts would hide guidance backward cost.

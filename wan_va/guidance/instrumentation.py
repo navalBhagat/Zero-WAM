@@ -6,6 +6,9 @@ import time
 class ResetTimer:
     def __init__(self, server):
         self.server = server
+        if getattr(server, 'save_root', None):
+            from pathlib import Path
+            Path(server.save_root, 'diagnostics').mkdir(parents=True, exist_ok=True)
         self.enabled = bool(getattr(server.job_config, 'profile_timing', False))
         self.started = self.previous = time.perf_counter()
         self.parts = {}

@@ -36,7 +36,13 @@ def guided_step(sample, velocity, sigma, base_next, reward_fn, strength,
         x = sample.detach().requires_grad_(True)
         clean = x - torch.as_tensor(sigma, device=x.device, dtype=x.dtype) * velocity.detach()
         reward = reward_fn(clean)
-        grad, = torch.autograd.grad(reward, x)
+        if __package__:
+            from .flops import component
+        else:
+            from contextlib import nullcontext
+            component = lambda name: nullcontext()
+        with component('guidance_backward'):
+            grad, = torch.autograd.grad(reward, x)
     if fixed_first_frame:
         grad = grad.clone()  # autograd may return an expanded, aliased gradient
         grad[:, :, :1] = 0
@@ -48,10 +54,17 @@ def guided_step(sample, velocity, sigma, base_next, reward_fn, strength,
     correction = strength * grad
     result = (base_next + correction).detach()
     applied = result - base_next
+    base_norm = (base_next - sample).float().norm().item()
+    applied_norm = applied.float().norm().item()
     stats = {"reward": reward.item(), "gradient_norm": norm.item(),
+             "correction_base_percent": 100*applied_norm/base_norm if base_norm else None,
+             "gradient_clipped": bool(max_norm > 0 and norm.item() > max_norm),
              "correction_norm": correction.float().norm().item(),
-             "base_update_norm": (base_next - sample).float().norm().item(),
-             "applied_correction_norm": applied.float().norm().item(),
+             "base_update_norm": base_norm,
+             "applied_correction_norm": applied_norm,
              "changed_fraction": (applied[grad != 0] != 0).float().mean().item()
              if torch.any(grad != 0) else 0.0}
+    if __package__:
+        from .flops import record_correction
+        record_correction(stats)
     return result, stats

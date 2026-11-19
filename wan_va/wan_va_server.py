@@ -3,6 +3,7 @@ import argparse
 import os
 import time
 from functools import partial
+from pathlib import Path
 from PIL import Image
 from diffusers.video_processor import VideoProcessor
 from diffusers.utils import export_to_video
@@ -14,6 +15,7 @@ from diffusers.pipelines.wan.pipeline_wan import prompt_clean
 from einops import rearrange
 from tqdm import tqdm
 
+from .guidance.flops import profile_policy_call, flop_component
 from .configs import VA_CONFIGS
 from .distributed.fsdp import shard_model
 from .distributed.util import _configure_model, init_distributed
@@ -192,6 +194,7 @@ class VA_Server:
 
         return prompt_embeds.to(device)
 
+    @flop_component('text_encoder')
     def encode_prompt(
         self,
         prompt,
@@ -364,6 +367,7 @@ class VA_Server:
                                                           action_mask] *= 0
         return input_dict
 
+    @flop_component('observation_vae_encode')
     def _encode_obs(self, obs):
         images = obs['obs']
         if not isinstance(images, list):
@@ -418,6 +422,7 @@ class VA_Server:
         video_latent = torch.cat(mu_norm.split(1, dim=0), dim=-1)
         return video_latent.to(self.device)
 
+    @flop_component('initial_observation_vae_encode')
     def _encode_initial_obs(self, obs):
         """Encode the first Robotwin observation like the VA sync runtime."""
         image = obs['obs']
@@ -1082,11 +1087,11 @@ class VA_Server:
         self.last_predicted_actions = cached_actions
         logger.info(f"[ICL] cache after infer: {self.transformer.cache_counts()}")
         result = self.postprocess_action(actions)
-        if getattr(self, "phase_separation", False):
+        if os.environ.get("RUN_DIAGNOSTICS", "0") == "1":
             from .modules.phase_separation import action_digest
             action_hash = action_digest(result)
             import json
-            with open(os.path.join(self.save_root, "phase_actions.jsonl"), "a") as stream:
+            with open(os.path.join(self.save_root, "diagnostics", "phase_actions.jsonl"), "a") as stream:
                 stream.write(json.dumps(dict(chunk=self.chunk_idx,sha256=action_hash)) + "\n")
         if profile:
             torch.cuda.synchronize(self.device)
@@ -1144,7 +1149,7 @@ class VA_Server:
         flush_workload(self, 'observation_cache')
         self.chunk_idx += 1
         logger.info(f"[ICL] cache after observation: {self.transformer.cache_counts()}")
-        if getattr(self.transformer, "compact_observation_cache", False) or getattr(self, "phase_separation", False):
+        if os.environ.get("RUN_DIAGNOSTICS", "0") == "1":
             from .modules.phase_separation import cache_state
             import json
             types = self.transformer.cache_type_ids_cache
@@ -1155,7 +1160,7 @@ class VA_Server:
                          kv_and_metadata_bytes=cache_state(self.transformer)[1],
                          allocated_bytes=torch.cuda.memory_allocated(self.device),
                          reserved_bytes=torch.cuda.memory_reserved(self.device))
-            with open(os.path.join(self.save_root, "cache_memory.jsonl"), "a") as stream:
+            with open(os.path.join(self.save_root, "diagnostics", "cache_memory.jsonl"), "a") as stream:
                 stream.write(json.dumps(stats) + "\n")
 
     def _reset(
@@ -1462,6 +1467,7 @@ class VA_Server:
         )
 
     @torch.no_grad()
+    @profile_policy_call
     def infer(self, obs):
         reset = obs.get('reset', False)
         prompt = obs.get('prompt', None)

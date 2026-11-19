@@ -33,6 +33,7 @@ import hashlib
 import importlib.util
 import random
 from evaluation.robotwin.geometry import euler2quat
+from evaluation.robotwin.artifacts import diagnostic_path
 import numpy as np
 
 from description.utils.generate_episode_instructions import *
@@ -460,11 +461,11 @@ def main(usr_args):
     else:
         embodiment_name = str(embodiment_type[0]) + "+" + str(embodiment_type[1])
 
-    save_dir = Path(save_root).resolve() / 'eval_result' / task_name / policy_name / task_config / str(ckpt_setting) / current_time
+    save_dir = Path(save_root).resolve()
     save_dir.mkdir(parents=True, exist_ok=True)
 
     if args["eval_video_log"]:
-        video_save_dir = save_dir
+        video_save_dir = diagnostic_path(save_root, 'native_videos')
         camera_config = get_camera_config(args["camera"]["head_camera_type"])
         video_size = str(camera_config["w"]) + "x" + str(camera_config["h"])
         video_save_dir.mkdir(parents=True, exist_ok=True)
@@ -518,13 +519,7 @@ def main(usr_args):
                                    icl_guidance_scale=icl_guidance_scale)
     suc_nums.append(suc_num)
 
-    file_path = os.path.join(save_dir, f"_result.txt")
-    with open(file_path, "w") as file:
-        file.write(f"Timestamp: {current_time}\n\n")
-        file.write(f"Instruction Type: {instruction_type}\n\n")
-        file.write("\n".join(map(str, np.array(suc_nums) / test_num)))
-
-    print(f"Data has been saved to {file_path}")
+    print(f"Results: {save_dir / 'results.csv'}")
 
 def format_obs(observation, prompt):
     return {
@@ -609,7 +604,7 @@ def eval_policy(task_name,
         args["render_freq"] = render_freq
 
         profile = EpisodeProfiler(
-            Path(args['save_root']) / f'stseed-{st_seed}' / 'metrics' / task_name / f'profile_episode_{now_id}.json',
+            diagnostic_path(args['save_root'], f'profiles/profile_episode_{now_id}.json'),
             enabled=args["profile_timing"], sync_gpu=args["profile_sync_gpu"],
         )
         profile.call("scene_setup", TASK_ENV.setup_demo,
@@ -707,6 +702,9 @@ def eval_policy(task_name,
         gen_video_list = []
         full_action_history = []
 
+        compute_summary = ret.get('compute')
+        if compute_summary is not None:
+            record_episode(run_config, now_id, compute=compute_summary)
         guidance_selections = []
         initial_obs = diagnostic_call("initial TASK_ENV.get_obs / camera capture", TASK_ENV.get_obs)
         inint_eef_pose = initial_obs['endpose']['left_endpose'] + \
@@ -718,7 +716,7 @@ def eval_policy(task_name,
         full_obs_list.append(initial_formatted_obs)
         from evaluation.robotwin.rollout_snapshots import RolloutSnapshots
         snapshots = RolloutSnapshots(
-            Path(args['save_root']) / 'snapshots' / f'episode_{now_id:03d}',
+            Path(args['save_root']) / 'diagnostics' / 'snapshots' / f'episode_{now_id:03d}',
             enabled=os.environ.get("SAVE_ROLLOUT_SNAPSHOTS", "0") == "1")
         snapshots.write(initial_formatted_obs, -1, TASK_ENV.take_action_cnt, TASK_ENV.eval_success)
         rollout_chunk = 0
@@ -732,6 +730,9 @@ def eval_policy(task_name,
             if ret.get('guidance_reference') is not None:
                 guidance_selections.append(ret['guidance_reference'])
                 record_episode(run_config, now_id, guidance_selections=guidance_selections)
+            if ret.get('compute') is not None:
+                compute_summary = ret['compute']
+                record_episode(run_config, now_id, compute=compute_summary)
             action = ret['action']
             if 'video' in ret:
                 imagined_video = ret['video']
@@ -787,12 +788,15 @@ def eval_policy(task_name,
             if TASK_ENV.eval_success:
                 succ = True
                 break
-            model.infer(dict(obs = key_frame_list, compute_kv_cache=True, imagine=False, save_visualization=save_visualization, state=action))
+            cache_ret = model.infer(dict(obs = key_frame_list, compute_kv_cache=True, imagine=False, save_visualization=save_visualization, state=action))
+            if cache_ret.get('compute') is not None:
+                compute_summary = cache_ret['compute']
+                record_episode(run_config, now_id, compute=compute_summary)
       
 
-        vis_dir = Path(args['save_root']) / f'stseed-{st_seed}' / 'visualization' / task_name
+        vis_dir = Path(args['save_root']) / 'videos'
         vis_dir.mkdir(parents=True, exist_ok=True)
-        video_name = f"{now_id}_{prompt.replace(' ', '_')}_{succ}.mp4"
+        video_name = f"episode_{now_id:03d}.mp4"
         out_img_file = vis_dir / video_name
         profile.call("video_encoding", save_comparison_video,
             real_obs_list=full_obs_list,
@@ -826,15 +830,6 @@ def eval_policy(task_name,
 
         TASK_ENV.test_num += 1
 
-        save_dir = Path(args['save_root']) / f'stseed-{st_seed}' / 'metrics' / task_name
-        save_dir.mkdir(parents=True, exist_ok=True)
-        out_json_file = save_dir / 'res.json'
-        write_json({
-          "succ_num": float(TASK_ENV.suc),
-          "total_num": float(TASK_ENV.test_num),
-          "succ_rate": float(TASK_ENV.suc / TASK_ENV.test_num),
-        }, out_json_file)
-        
         print(
             f"\033[93m{task_name}\033[0m | \033[94m{args['policy_name']}\033[0m | \033[92m{args['task_config']}\033[0m | \033[91m{args['ckpt_setting']}\033[0m\n"
             f"Success rate: \033[96m{TASK_ENV.suc}/{TASK_ENV.test_num}\033[0m => \033[95m{round(TASK_ENV.suc/TASK_ENV.test_num*100, 1)}%\033[0m, current seed: \033[90m{now_seed}\033[0m\n"

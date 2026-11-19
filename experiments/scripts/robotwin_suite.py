@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[2]
 MODES = {'text': (0, 1, 0), 'icl': (1, 0, 0), 'guidance': (0, 0, 1),
          'icl_guidance': (1, 0, 1)}
 # Do not let an earlier interactive experiment silently contaminate a new stage.
-CONTROLLED = ('START_SEED', 'EPISODE_OFFSET', 'COMPACT_OBSERVATION_CACHE', 'SAVE_ROLLOUT_SNAPSHOTS', 'PHASE_COMPARE_ACTIONS', 'PHASE_SEPARATION', 'PHASE_OFFLOAD_TRANSFORMER', 'STAGE_REQUIRE_SUCCESS', 'GUIDANCE_CAPTURE', 'GUIDANCE_SELECTION', 'GUIDANCE_REFERENCE_FRAMES',
+CONTROLLED = ('COUNT_POLICY_FLOPS', 'RUN_DIAGNOSTICS', 'SAVE_GUIDANCE_CAPTURE', 'START_SEED', 'EPISODE_OFFSET', 'COMPACT_OBSERVATION_CACHE', 'SAVE_ROLLOUT_SNAPSHOTS', 'PHASE_COMPARE_ACTIONS', 'PHASE_SEPARATION', 'PHASE_OFFLOAD_TRANSFORMER', 'STAGE_REQUIRE_SUCCESS', 'GUIDANCE_CAPTURE', 'GUIDANCE_SELECTION', 'GUIDANCE_REFERENCE_FRAMES',
               'GUIDANCE_LOOKAHEAD_MODE', 'GUIDANCE_DISTANCE_INCREMENT', 'GUIDANCE_DISTANCE_SMOOTHING', 'GUIDANCE_MAX_LOOKAHEAD_FRAMES', 'GUIDANCE_MATCH_WINDOW', 'GUIDANCE_LOOKAHEAD', 'GUIDANCE_STRENGTH',
               'GUIDANCE_EVERY', 'GUIDANCE_MAX_NORM', 'GUIDANCE_REFERENCE_SOURCE',
               'GUIDANCE_DECODER_DTYPE', 'GUIDANCE_STATE_DTYPE', 'VIDEO_STATE_FP32',
@@ -62,10 +62,13 @@ def specifications(a):
                     GUIDANCE_DECODER_DTYPE=dtype, GUIDANCE_SELECTION=selector,
                     GUIDANCE_MATCH_WINDOW=str(a.window), GUIDANCE_LOOKAHEAD=str(a.lookahead),
                     GUIDANCE_REFERENCE_FRAMES=str(a.fixed_frame), GUIDANCE_STRENGTH=str(a.strength),
-                    GUIDANCE_EVERY='10', GUIDANCE_MAX_NORM='1', GUIDANCE_REFERENCE_SOURCE=a.reference_source,
+                    GUIDANCE_EVERY=str(a.guidance_every), GUIDANCE_MAX_NORM='1', GUIDANCE_REFERENCE_SOURCE=a.reference_source,
                     CLIENT_TIMEOUT=str(a.client_timeout), EXPERIMENT_LABEL=label,
                     EXPERIMENT_STAGE=a.stage, EXPERIMENT_REPEAT=str(repeat),
                     EXPERIMENT_OUTPUT_ROOT=str(a.manifest.resolve().parent/'runs'))
+                env.update(COUNT_POLICY_FLOPS=str(int(not a.no_flop_count)),
+                           RUN_DIAGNOSTICS=str(int(a.diagnostics)),
+                           SAVE_GUIDANCE_CAPTURE=str(int(a.capture_guidance)))
                 if a.lookahead_mode != 'frames':
                     env.update(GUIDANCE_LOOKAHEAD_MODE=a.lookahead_mode,
                         GUIDANCE_DISTANCE_INCREMENT=str(a.distance_increment) if a.distance_increment is not None else '',
@@ -111,7 +114,7 @@ def extend_baselines(specs, previous_path, root):
     if previous['stage'] != 'baselines':
         raise ValueError('--resume-from requires a baseline manifest')
     # Timing/output controls may change; policy, rendering and seed settings may not.
-    ignored = {'TEST_NUM', 'CLIENT_TIMEOUT', 'EXPERIMENT_OUTPUT_ROOT',
+    ignored = {'COUNT_POLICY_FLOPS', 'RUN_DIAGNOSTICS', 'SAVE_GUIDANCE_CAPTURE', 'TEST_NUM', 'CLIENT_TIMEOUT', 'EXPERIMENT_OUTPUT_ROOT',
                'EXPERIMENT_SOURCE_DIGEST', 'EXPERIMENT_LABEL', 'EXPERIMENT_STAGE',
                'EXPERIMENT_REPEAT', 'START_SEED', 'EPISODE_OFFSET', 'ZERO_WAM_ROOT'}
     reused, pending = [], []
@@ -135,7 +138,8 @@ def extend_baselines(specs, previous_path, root):
             episodes = [e for e in config.get('episodes', []) if e.get('status') == 'completed']
             if not episodes:
                 continue
-            if not (folder / 'job_timing.json').exists():
+            from evaluation.robotwin.artifacts import find_artifact
+            if not find_artifact(folder, 'job_timing.json').exists():
                 raise ValueError(f'Prior job may still be active: {folder}; wait for it to finish')
             # A source archive is retained for every referenced segment, including extensions.
             bundle = Path(old.get('resume_source_bundle') or previous['source_bundle'])
@@ -207,6 +211,10 @@ def parser():
     p.add_argument('--max-lookahead-frames', type=int, default=24)
     p.add_argument('--fixed-frame', default='last', help='Zero-based RGB index or last')
     p.add_argument('--strength', type=float, default=.01)
+    p.add_argument('--guidance-every', type=int, default=10)
+    p.add_argument('--diagnostics', action='store_true', help='Save package inventories, action hashes and cache/offload traces')
+    p.add_argument('--capture-guidance', action='store_true', help='Save one prediction for gradient/strength replay')
+    p.add_argument('--no-flop-count', action='store_true', help='Disable operator accounting; record missing FLOPs rather than zeros')
     p.add_argument('--reference-source', choices=['auto', 'video', 'latent'], default='auto')
     p.add_argument('--partition', default='gpu_a100')
     p.add_argument('--time', default=None, help='Wall limit per job; raise for multi-episode runs')
@@ -233,6 +241,8 @@ def main():
         p.error('--distance-increment must be finite and positive')
     if a.distance_smoothing < 1 or a.distance_smoothing % 2 != 1 or a.max_lookahead_frames < 1:
         p.error('Distance smoothing must be positive odd; maximum lookahead must be positive')
+    if a.guidance_every < 1:
+        p.error('--guidance-every must be positive')
     if a.sampling_seed < 0:
         p.error('Sampling seed must be nonnegative')
     if min(a.episodes, a.repeats, a.window, a.client_timeout) < 1 or a.lookahead < 0:
