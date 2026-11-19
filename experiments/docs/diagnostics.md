@@ -223,3 +223,36 @@ A method that stays early may score well on failure but miss successful lifting.
 A method that always selects late frames may match terminal success by chance.
 Relative changes may still be dominated by arm motion or different camera geometry;
 this experiment does not presume they encode semantic progress.
+
+## Bread-basket diagnostic and annotations
+
+```bash
+sbatch experiments/jobs/bread_matching.sbatch
+```
+
+One CPU-only Rome job uses successful guidance pilot **29326933**, which has five
+saved chunk observations. No new rollout or inference policy is run. Results go
+to `experiments/stages/bread_matching/job_<JOB_ID>/`. Inspect `comparison.png`,
+`matching.png`, and `results.csv`. The CSV includes unconstrained absolute matches,
+existing window matches, +4 and automatic distance targets, the temporal candidate,
+initial-relative cosine/L2 matches, and constant first/last-frame controls.
+`embeddings.npz` caches features for later stage analysis without DINO reruns.
+
+Copy `labels_template.csv` to `experiments/stages/bread_matching/labels.csv`.
+Label the human frames in `reference_frames/` and robot observations in the
+original run's `references/episode_000/robot_chunk_*.png`. Use consistent visible
+states such as pre_grasp, holding, lifted, placed; annotate according to this
+bread task, not the scale labels. Both robot and human labels must be newly
+inspected because this is a different task and demonstration.
+
+```bash
+sbatch experiments/jobs/bread_matching.sbatch \
+  --labels experiments/stages/bread_matching/labels.csv
+```
+
+Each submission creates a fresh directory. Console agreement excludes the initial
+anchor for all six methods; blank robot labels are excluded, and missing predicted
+reference labels/relative abstentions count as incorrect. The four remaining chunk
+observations are a small diagnostic, not evidence of general task performance.
+The successful run may not contain a terminal image among its saved chunk-start
+observations; do not assign placement to its final image unless visibly achieved.

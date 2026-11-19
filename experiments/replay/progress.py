@@ -174,6 +174,11 @@ def main(argv=None):
         / "experiments/stages/03_guidance_strength_100/runs/place_object_scale_29485194",
     )
     argument_parser.add_argument(
+        "--task",
+        choices=["place_object_scale", "place_bread_basket"],
+        default="place_object_scale",
+    )
+    argument_parser.add_argument(
         "--max-progress-advance",
         type=int,
         default=4,
@@ -212,6 +217,9 @@ def main(argv=None):
         reference, paths, options.dino_checkpoint, dino
     )
     scores = (queries @ features.T).numpy()
+    from .relative_matching import matching_scores
+
+    relative_scores, changed, _ = matching_scores(features.numpy(), queries.numpy())
     try:
         rows, posterior = track(
             scores,
@@ -270,17 +278,44 @@ def main(argv=None):
             chunk=chunk,
             current_match=selector.position,
             current_target=baseline,
+            frame_lookahead_target=min(
+                len(reference) - 1, selector.position + options.lookahead
+            ),
+            initial_anchor=i == 0,
             recommended_target=target,
             robot_stage=labels["robot"].get(chunk, ""),
         )
-        for method in ("nearest", "progress"):
+        for method in ("relative_cosine", "relative_l2"):
+            row[f"{method}_frame"] = (
+                int(relative_scores[method][i].argmax()) if changed[i] else None
+            )
+        row["stay_at_start_frame"] = 0
+        row["last_frame_frame"] = len(reference) - 1
+        for method in (
+            "nearest",
+            "progress",
+            "relative_cosine",
+            "relative_l2",
+            "stay_at_start",
+            "last_frame",
+        ):
             stage = labels["reference"].get(row[f"{method}_frame"], "")
             row[f"{method}_stage"] = stage
             row[f"{method}_stage_correct"] = (
-                stage == row["robot_stage"] if stage and row["robot_stage"] else ""
+                bool(stage and stage == row["robot_stage"])
+                if row["robot_stage"]
+                else ""
             )
     options.output.mkdir(parents=True, exist_ok=True)
     write_csv(options.output / "results.csv", rows)
+    import numpy as np
+
+    np.savez_compressed(
+        options.output / "embeddings.npz",
+        reference=features.numpy(),
+        robot=queries.numpy(),
+        chunks=chunks,
+    )
     figures(options.output, scores, posterior, rows, reference, observations)
     # Emit every reference frame so manual stage annotation does not require decoding again.
     from PIL import Image
@@ -323,12 +358,19 @@ def main(argv=None):
     print(
         f"Saved results.csv, matching.png, comparison.png and annotation frames to {options.output}"
     )
-    for method in ("nearest", "progress"):
+    for method in (
+        "nearest",
+        "progress",
+        "relative_cosine",
+        "relative_l2",
+        "stay_at_start",
+        "last_frame",
+    ):
         evaluated = [
             r[f"{method}_stage_correct"]
-            for r in rows
+            for r in rows[1:]
             if r[f"{method}_stage_correct"] != ""
         ]
         print(
-            f"{method} stage agreement: {sum(evaluated)}/{len(evaluated)} labelled observations"
+            f"{method} stage agreement: {sum(evaluated)}/{len(evaluated)} labelled noninitial observations"
         )

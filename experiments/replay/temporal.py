@@ -135,8 +135,9 @@ def load_inputs(options, argument_parser):
     )
     if episode is None:
         argument_parser.error("Episode ID not found")
-    if episode.get("task", config.get("TASK")) != "place_object_scale":
-        argument_parser.error("This phase is for place_object_scale")
+    task = getattr(options, "task", "place_object_scale")
+    if episode.get("task", config.get("TASK")) != task:
+        argument_parser.error(f"Expected task {task}")
     try:
         override = getattr(options, "robot_observation_dir", None)
         if override is not None:
