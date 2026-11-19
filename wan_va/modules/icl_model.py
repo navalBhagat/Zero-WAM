@@ -28,6 +28,7 @@ from torch.nn.attention.flex_attention import (
 )
 
 from .model import WanRotaryPosEmbed, WanTimeTextImageEmbedding
+from ..guidance.flops import compiled_attention, mask_construction, flop_component
 
 
 ICL_CACHE_TYPE = 2
@@ -91,15 +92,16 @@ class ICLAttentionBackend:
         )
 
         mask_builder = _compiled_create_block_mask if compile_mask else create_block_mask
-        cls.self_mask = mask_builder(
-            mask_mod,
-            1,
-            1,
-            len(query_type_ids),
-            len(key_type_ids),
-            device=device,
-            _compile=compile_mask,
-        )
+        with mask_construction():
+            cls.self_mask = mask_builder(
+                mask_mod,
+                1,
+                1,
+                len(query_type_ids),
+                len(key_type_ids),
+                device=device,
+                _compile=compile_mask,
+            )
         return cls.self_mask
 
     @classmethod
@@ -197,15 +199,16 @@ class ICLAttentionBackend:
             return query_seq_ids[q_idx] == encoder_seq_ids[kv_idx]
 
         mask_builder = _compiled_create_block_mask if compile_mask else create_block_mask
-        cls.cross_mask = mask_builder(
-            sequence_mask,
-            1,
-            1,
-            len(query_seq_ids),
-            len(encoder_seq_ids),
-            device=device,
-            _compile=compile_mask,
-        )
+        with mask_construction():
+            cls.cross_mask = mask_builder(
+                sequence_mask,
+                1,
+                1,
+                len(query_seq_ids),
+                len(encoder_seq_ids),
+                device=device,
+                _compile=compile_mask,
+            )
         return cls.cross_mask
 
     @classmethod
@@ -229,20 +232,21 @@ class ICLAttentionBackend:
         query = query.to(value.dtype)
         key = key.to(value.dtype)
 
-        return _compiled_flex_attention(
-            query,
-            key,
-            value,
-            block_mask=block_mask,
-            kernel_options={
-                "BLOCK_M": 64,
-                "BLOCK_N": 64,
-                "BLOCK_M1": 32,
-                "BLOCK_N1": 64,
-                "BLOCK_M2": 64,
-                "BLOCK_N2": 32,
-            },
-        ).transpose(1, 2)
+        with compiled_attention(query, key, value):
+            return _compiled_flex_attention(
+                query,
+                key,
+                value,
+                block_mask=block_mask,
+                kernel_options={
+                    "BLOCK_M": 64,
+                    "BLOCK_N": 64,
+                    "BLOCK_M1": 32,
+                    "BLOCK_N1": 64,
+                    "BLOCK_M2": 64,
+                    "BLOCK_N2": 32,
+                },
+            ).transpose(1, 2)
 
 
 class WanICLAttention(nn.Module):
@@ -753,6 +757,12 @@ class WanICLTransformer3DModel(ModelMixin, ConfigMixin):
             return
         keep_icl = self.cache_type_ids_cache == ICL_CACHE_TYPE
         keep_obs = self.cache_type_ids_cache == OBSERVATION_CACHE_TYPE
+        if getattr(self, "compact_observation_cache", False):
+            # These keys cannot satisfy valid_pair (sequence=-1). Remove their
+            # actual K/V storage, preserving all real history and the ICL prefix.
+            padding = ((self.seq_ids_cache == -1) & (self.frame_ids_cache == -1)
+                       & (self.type_ids_cache == -1))
+            keep_obs = keep_obs & ~padding
         window = self.attn_window if attn_window is None else attn_window
         if window > 0 and keep_obs.any():
             next_frame_id = self.frame_ids_cache[keep_obs].max() + 1
@@ -1201,6 +1211,7 @@ class WanICLTransformer3DModel(ModelMixin, ConfigMixin):
             return latent_output, action_output, mcp_outputs
         return latent_output, action_output
 
+    @flop_component("transformer")
     def _forward_stream(
         self,
         input_dict,
@@ -1297,6 +1308,10 @@ class WanICLTransformer3DModel(ModelMixin, ConfigMixin):
 
         text_emb = input_dict["text_emb"]
         text_hidden_states = self.condition_embedder.text_embedder(text_emb)
+        from wan_va.guidance.instrumentation import record_transformer_work
+        record_transformer_work(self, mode, token_count, token_count+padded_length,
+                                key_type.numel(), text_hidden_states.shape[1])
+
         encoder_seq = input_dict.get(
             "encoder_seq_ids",
             torch.zeros(text_hidden_states.shape[1], device=device, dtype=torch.int),

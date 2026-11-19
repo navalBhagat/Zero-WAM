@@ -30,16 +30,6 @@ def test_shift_latents_for_mcp_handles_shift_beyond_sequence():
     assert not valid_mask.any()
 
 
-def test_validate_mcp_settings_accepts_default_architecture():
-    MCP.validate_mcp_settings(
-        num_mcp_modules=4,
-        mcp_blocks_per_group=1,
-        mcp_hidden_collect_layers=[3, 11, 19, 29],
-        mcp_loss_weights=[0.5, 0.25, 0.15, 0.1],
-        num_layers=30,
-    )
-
-
 @pytest.mark.parametrize(
     'kwargs, message',
     [

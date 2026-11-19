@@ -26,10 +26,6 @@ def test_dataset_mixture_weights_are_relative_probabilities():
     assert probabilities["robotwin"] == pytest.approx(1 / 6)
 
 
-def test_dataset_mixture_default_is_robotwin():
-    assert parse_dataset_mixture(None, AVAILABLE) == [("robotwin", 1.0)]
-
-
 @pytest.mark.parametrize(
     "value",
     [

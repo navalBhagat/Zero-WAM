@@ -1,0 +1,48 @@
+import json
+import sys
+from experiments.scripts import run_stage00 as stage
+
+
+def test_stage00_is_three_gated_jobs_with_known_inputs(tmp_path, monkeypatch):
+    manifest = tmp_path / "manifest.json"
+    calls = []
+    real = stage.subprocess.check_output
+
+    def check(cmd, **kwargs):
+        if cmd[0] != "sbatch":
+            return real(cmd, **kwargs)
+        calls.append((cmd, kwargs["env"]))
+        return str(100 + len(calls)) + "\n"
+
+    monkeypatch.setattr(stage.subprocess, "check_output", check)
+    monkeypatch.setattr(sys, "argv", ["stage", "--manifest", str(manifest), "--submit"])
+    stage.main()
+    data = json.loads(manifest.read_text())
+    runs = data["runs"]
+    assert len(calls) == len(runs) == 3
+    assert [r["environment"]["PHASE_OFFLOAD_TRANSFORMER"] for r in runs] == [
+        "1",
+        "1",
+        "1",
+    ]
+    assert all(
+        r["environment"]["PHASE_SEPARATION"] == "1"
+        and r["environment"]["TEST_NUM"] == "1"
+        for r in runs
+    )
+    assert [r["environment"]["SAMPLING_SEED"] for r in runs] == ["1234", "1234", "1234"]
+    assert all(
+        r["environment"]["TARGET_TEXT_SOURCE"] == "empty"
+        and r["environment"]["ICL_TEXT_SOURCE"] == "cached"
+        and r["environment"]["VIDEO_STATE_FP32"] == "1"
+        and r["environment"]["USE_GUIDANCE"] == "0"
+        for r in runs
+    )
+    assert [r["environment"]["STAGE_REQUIRE_SUCCESS"] for r in runs] == ["1", "1", "0"]
+    assert [r["environment"]["COMPACT_OBSERVATION_CACHE"] for r in runs] == [
+        "0",
+        "1",
+        "1",
+    ]
+    assert "--dependency=afterok:101" in calls[1][0]
+    assert "--dependency=afterok:102" in calls[2][0]

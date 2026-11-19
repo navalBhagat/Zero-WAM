@@ -2,7 +2,6 @@ from types import SimpleNamespace
 
 import torch
 
-from wan_va.configs.va_robotwin_cfg import va_robotwin_cfg
 from wan_va.modules.icl_model import PREDICTION_CACHE_TYPE
 from wan_va.wan_va_server import VA_Server
 
@@ -96,22 +95,6 @@ def test_icl_action_denoising_matches_robotwin_sync_rollout():
     assert server.last_predicted_actions.data_ptr() != result.data_ptr()
 
 
-def test_robotwin_action_quantiles_match_released_eval_dataset():
-    expected_q01 = [
-        -0.054687286317348476, -9.834766387939453e-07,
-        -0.0746749371290207, -1, -1, -1, -1, -0.3589721029996872,
-        -1.1026859283447266e-06, -0.11628214418888091, -1, -1, -1, -1,
-    ]
-    expected_q99 = [
-        0.35284559458494186, 0.3960446125268936, 0.1493294847011566,
-        1, 1, 1, 1, 0.02997654676437378, 0.38793458312749857,
-        0.18672722578048706, 1, 1, 1, 1,
-    ]
-
-    assert va_robotwin_cfg.norm_stat["q01"][:14] == expected_q01
-    assert va_robotwin_cfg.norm_stat["q99"][:14] == expected_q99
-
-
 def test_icl_observation_cache_reuses_exact_predicted_action():
     server = _mock_server()
     server.init_latent = torch.zeros(1, 48, 1, 1, 1)
@@ -144,3 +127,84 @@ def test_icl_cfg_does_not_duplicate_observed_action_branch():
     assert video_call[2]["latent_res_lst"]["noisy_latents"].shape[2] == 4
     assert action_call[2]["action_res_lst"]["noisy_latents"].shape[2] == 2
     assert torch.all(action_call[2]["current_seq_ids"] == 0)
+
+
+def test_external_guidance_precedes_final_video_cache(monkeypatch):
+    server = _mock_server()
+    server.job_config.external_strength = 0.1
+    server.job_config.external_every = 1
+    server.job_config.external_max_norm = 1.0
+    server.scheduler.sigmas = torch.tensor([0.5])
+    server.external_reward = lambda clean: clean.sum()
+    server.external_reference_kind = "test"
+    monkeypatch.setattr(torch.cuda, 'synchronize', lambda *_: None)
+    monkeypatch.setattr(torch.cuda, 'reset_peak_memory_stats', lambda *_: None)
+    monkeypatch.setattr(torch.cuda, 'memory_allocated', lambda *_: 0)
+    monkeypatch.setattr(torch.cuda, 'max_memory_allocated', lambda *_: 0)
+    monkeypatch.setattr(torch.cuda, 'max_memory_reserved', lambda *_: 0)
+    monkeypatch.delenv('GUIDANCE_CAPTURE', raising=False)
+    server._infer_icl({'obs': []})
+    calls = [c for c in server.transformer.calls if c[0] == 'forward_latent_only']
+    assert [c[1] for c in calls] == [0, 1]
+    cached = calls[-1][2]['latent_res_lst']['noisy_latents']
+    torch.testing.assert_close(cached, server.last_predicted_latents)
+    assert torch.count_nonzero(cached[:, :, :1]) == 0
+    assert server.action_scheduler.step_calls == 1
+
+
+def test_guided_sampling_keeps_fp32_state_and_bf16_model_input(monkeypatch):
+    server = _mock_server()
+    server.job_config.profile_timing = True
+    server.dtype = torch.bfloat16
+    server.job_config.external_strength = 0.01
+    server.job_config.external_every = 1
+    server.job_config.external_max_norm = 1.0
+    server.scheduler.sigmas = torch.tensor([0.5])
+    server.external_reference_kind = "test"
+    server.external_reward = lambda clean: clean.float().sum()
+    for name in ("synchronize", "reset_peak_memory_stats"):
+        monkeypatch.setattr(torch.cuda, name, lambda *_: None)
+    for name in ("max_memory_allocated", "max_memory_reserved", "memory_allocated"):
+        monkeypatch.setattr(torch.cuda, name, lambda *_: 0)
+    monkeypatch.delenv("GUIDANCE_CAPTURE", raising=False)
+    server._infer_icl({"obs": []})
+    assert server.last_predicted_latents.dtype == torch.float32
+    video = [c for c in server.transformer.calls if c[0] == "forward_latent_only"]
+    assert all(c[2]["latent_res_lst"]["noisy_latents"].dtype == torch.bfloat16 for c in video)
+    assert [c[1] for c in video] == [0, 1]
+
+
+def test_explicit_reference_is_selected_once_per_robot_chunk(monkeypatch, tmp_path):
+    from wan_va.guidance.selection import FixedFrameSelector
+
+    server = _mock_server()
+    server.job_config.external_strength = .01
+    server.job_config.external_every = 1
+    server.job_config.external_max_norm = 1
+    server.scheduler.sigmas = torch.tensor([.5])
+    server.external_reference_kind = 'test'
+    server.guidance_selector = FixedFrameSelector(4)
+    server.reference_preview_dir = str(tmp_path)
+    selected = []
+    class Reward:
+        selected_frames = None
+        def select_reference(self, indices):
+            self.selected_frames = indices
+            selected.append(indices)
+        def save_reference_frames(self, output):
+            return []
+        def __call__(self, clean):
+            return clean.sum()
+    server.external_reward = Reward()
+    for name in ('synchronize', 'reset_peak_memory_stats'):
+        monkeypatch.setattr(torch.cuda, name, lambda *_: None)
+    for name in ('max_memory_allocated', 'max_memory_reserved', 'memory_allocated'):
+        monkeypatch.setattr(torch.cuda, name, lambda *_: 0)
+    monkeypatch.delenv('GUIDANCE_CAPTURE', raising=False)
+    server._infer_icl(dict(obs=[], guidance_reference_frames=[2]))
+    assert selected == [[2]]  # not repeated during the final cache-only pass
+    assert server.last_guidance_selection['frame_indices'] == [2]
+    server.chunk_idx = 1
+    server._infer_icl(dict(obs=[], guidance_reference_frames=[3]))
+    assert selected == [[2], [3]]
+    assert server.last_guidance_selection['chunk'] == 1

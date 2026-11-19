@@ -33,6 +33,7 @@ import hashlib
 import importlib.util
 import random
 from evaluation.robotwin.geometry import euler2quat
+from evaluation.robotwin.artifacts import diagnostic_path
 import numpy as np
 
 from description.utils.generate_episode_instructions import *
@@ -50,6 +51,9 @@ from pathlib import Path
 
 from evaluation.robotwin.websocket_client_policy import WebsocketClientPolicy
 from evaluation.robotwin.test_render import Sapien_TEST
+from evaluation.robotwin.profiling import EpisodeProfiler
+from evaluation.robotwin.run_metadata import create_run, record_episode
+from evaluation.robotwin.rendering import configure_rendering, render_settings
 
 def diagnostic_call(label, function, *args, **kwargs):
     """Optionally bracket a blocking simulator/server call with timestamps."""
@@ -370,6 +374,8 @@ def resolve_icl_latent_path(video_path, latent_root):
 
 
 def main(usr_args):
+    rendering = configure_rendering(samples=usr_args.get("render_samples_per_pixel"))
+    os.environ["RENDER_SAMPLES_PER_PIXEL"] = str(rendering["samples_per_pixel_effective"])
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     task_name = usr_args["task_name"]
     task_config = usr_args["task_config"]
@@ -383,8 +389,13 @@ def main(usr_args):
     icl_seed = int(
         usr_args.get("seed", 0) if icl_seed_value is None else icl_seed_value
     )
-    icl_video_mapping = load_icl_human_video_map(
-        usr_args["icl_human_video_map"]
+    use_icl = bool(usr_args.get("use_icl", 1))
+    use_text = bool(usr_args.get("use_text", 0))
+    use_guidance = bool(usr_args.get("use_guidance", 0))
+    needs_reference = use_icl or use_guidance
+    icl_video_mapping = (
+        load_icl_human_video_map(usr_args["icl_human_video_map"])
+        if needs_reference else None
     )
     icl_latent_root = usr_args["icl_latent_root"]
     episode_offset = int(usr_args.get("episode_offset") or 0)
@@ -400,6 +411,12 @@ def main(usr_args):
     args["task_config"] = task_config
     args["ckpt_setting"] = ckpt_setting
     args["save_root"] = save_root
+    args["use_icl"] = use_icl
+    args["use_text"] = use_text
+    args["use_guidance"] = use_guidance
+    args["profile_timing"] = bool(usr_args.get("profile_timing", 0))
+    args["profile_sync_gpu"] = bool(usr_args.get("profile_sync_gpu", 0))
+    args["needs_reference"] = needs_reference
     args["icl_seed"] = icl_seed
     args["icl_video_mapping"] = icl_video_mapping
     args["icl_latent_root"] = icl_latent_root
@@ -444,11 +461,11 @@ def main(usr_args):
     else:
         embodiment_name = str(embodiment_type[0]) + "+" + str(embodiment_type[1])
 
-    save_dir = Path(f"eval_result/{task_name}/{policy_name}/{task_config}/{ckpt_setting}/{current_time}")
+    save_dir = Path(save_root).resolve()
     save_dir.mkdir(parents=True, exist_ok=True)
 
     if args["eval_video_log"]:
-        video_save_dir = save_dir
+        video_save_dir = diagnostic_path(save_root, 'native_videos')
         camera_config = get_camera_config(args["camera"]["head_camera_type"])
         video_size = str(camera_config["w"]) + "x" + str(camera_config["h"])
         video_save_dir.mkdir(parents=True, exist_ok=True)
@@ -502,13 +519,7 @@ def main(usr_args):
                                    icl_guidance_scale=icl_guidance_scale)
     suc_nums.append(suc_num)
 
-    file_path = os.path.join(save_dir, f"_result.txt")
-    with open(file_path, "w") as file:
-        file.write(f"Timestamp: {current_time}\n\n")
-        file.write(f"Instruction Type: {instruction_type}\n\n")
-        file.write("\n".join(map(str, np.array(suc_nums) / test_num)))
-
-    print(f"Data has been saved to {file_path}")
+    print(f"Results: {save_dir / 'results.csv'}")
 
 def format_obs(observation, prompt):
     return {
@@ -575,11 +586,12 @@ def eval_policy(task_name,
                 args["render_freq"] = render_freq
                 continue
             except Exception as e:
+                TASK_ENV.close_env()
+                now_seed += 1
                 args["render_freq"] = render_freq
-                raise RuntimeError(
-                    f"Expert setup failed for {task_name}, seed {now_seed}; "
-                    "stopping instead of retrying a potentially broken environment."
-                ) from e
+                print(f"error occurs ! {e}")
+                traceback.print_exc()
+                continue
 
         if (not expert_check) or (TASK_ENV.plan_success and TASK_ENV.check_success()):
             succ_seed += 1
@@ -591,7 +603,13 @@ def eval_policy(task_name,
 
         args["render_freq"] = render_freq
 
-        TASK_ENV.setup_demo(now_ep_num=now_id, seed=now_seed, is_test=True, **args)
+        profile = EpisodeProfiler(
+            diagnostic_path(args['save_root'], f'profiles/profile_episode_{now_id}.json'),
+            enabled=args["profile_timing"], sync_gpu=args["profile_sync_gpu"],
+        )
+        profile.call("scene_setup", TASK_ENV.setup_demo,
+                     now_ep_num=now_id, seed=now_seed, is_test=True, **args)
+        profile.attach(TASK_ENV, model)
         episode_info_list = [episode_info["info"]]
         results = generate_episode_descriptions(args["task_name"], episode_info_list, test_num)
         instruction = np.random.choice(results[0][instruction_type])
@@ -629,26 +647,43 @@ def eval_policy(task_name,
         succ = False
 
         prompt = TASK_ENV.get_instruction()
-        icl_video_path = select_icl_video(
-            args["icl_video_mapping"],
-            task_name,
-            args["icl_seed"],
-            now_id,
-        )
-        icl_latent_path = resolve_icl_latent_path(
-            icl_video_path, args["icl_latent_root"]
-        )
+        icl_video_path, icl_latent_path = "", ""
+        if args["needs_reference"]:
+            icl_video_path = select_icl_video(
+                args["icl_video_mapping"], task_name, args["icl_seed"], now_id,
+            )
+            # Native ICL and reconstructed DINO references both use this cache.
+            icl_latent_path = resolve_icl_latent_path(
+                icl_video_path, args["icl_latent_root"]
+            )
         print(
             f"[ICL] task={task_name} episode={now_id} "
             f"video={icl_video_path} latent={icl_latent_path or 'MP4_FALLBACK'}",
             flush=True,
+        )
+        run_config = Path(args['save_root']) / 'config.json'
+        # Direct client launches also get a run record (Slurm creates it earlier).
+        if not run_config.exists():
+            create_run(run_config, os.environ, Path(__file__).resolve().parents[2])
+        # Persist before server reset: interrupted runs retain the actual task/seed.
+        record_episode(
+            run_config, now_id, status="initializing", task=task_name,
+            simulator_seed=int(now_seed), icl_seed=int(args["icl_seed"]),
+            episode_offset=int(args.get("episode_offset", 0)),
+            task_instruction=str(prompt), rendering=render_settings(),
+            stopping_policy="robotwin_eval_success_after_each_action_skip_terminal_cache",
+            requested_conditioning=dict(use_icl=args["use_icl"], use_text=args["use_text"],
+                                        use_guidance=args["use_guidance"]),
+            selected_reference=dict(video=icl_video_path or None, latent=icl_latent_path or None),
         )
         ret = diagnostic_call("server reset / human-context cache", model.infer,
             dict(
                 reset=True,
                 prompt=prompt,
                 save_visualization=save_visualization,
-                use_icl=True,
+                use_icl=args["use_icl"],
+                use_text=args["use_text"],
+                use_guidance=args["use_guidance"],
                 icl_video_path=icl_video_path,
                 icl_latent_path=icl_latent_path,
                 video_guidance_scale=video_guidance_scale,
@@ -656,11 +691,21 @@ def eval_policy(task_name,
             )
         )
         
+        server_metadata = ret.get("metadata")
+        record_episode(
+            run_config, now_id, status="running", metadata_verified=server_metadata is not None,
+            model_text=server_metadata.get("model_text") if server_metadata else None,
+            server=server_metadata,
+        )
         first = True
         full_obs_list = []
         gen_video_list = []
         full_action_history = []
 
+        compute_summary = ret.get('compute')
+        if compute_summary is not None:
+            record_episode(run_config, now_id, compute=compute_summary)
+        guidance_selections = []
         initial_obs = diagnostic_call("initial TASK_ENV.get_obs / camera capture", TASK_ENV.get_obs)
         inint_eef_pose = initial_obs['endpose']['left_endpose'] + \
         [initial_obs['endpose']['left_gripper']] + \
@@ -669,6 +714,12 @@ def eval_policy(task_name,
         inint_eef_pose = np.array(inint_eef_pose, dtype=np.float64)
         initial_formatted_obs = format_obs(initial_obs, prompt)
         full_obs_list.append(initial_formatted_obs)
+        from evaluation.robotwin.rollout_snapshots import RolloutSnapshots
+        snapshots = RolloutSnapshots(
+            Path(args['save_root']) / 'diagnostics' / 'snapshots' / f'episode_{now_id:03d}',
+            enabled=os.environ.get("SAVE_ROLLOUT_SNAPSHOTS", "0") == "1")
+        snapshots.write(initial_formatted_obs, -1, TASK_ENV.take_action_cnt, TASK_ENV.eval_success)
+        rollout_chunk = 0
         first_obs = None
         while TASK_ENV.take_action_cnt<TASK_ENV.step_lim:
             if first:
@@ -676,6 +727,12 @@ def eval_policy(task_name,
                 first_obs = format_obs(observation, prompt)
 
             ret = diagnostic_call("action-chunk inference", model.infer, dict(obs=first_obs, prompt=prompt, save_visualization=save_visualization, video_guidance_scale=video_guidance_scale, action_guidance_scale=action_guidance_scale))
+            if ret.get('guidance_reference') is not None:
+                guidance_selections.append(ret['guidance_reference'])
+                record_episode(run_config, now_id, guidance_selections=guidance_selections)
+            if ret.get('compute') is not None:
+                compute_summary = ret['compute']
+                record_episode(run_config, now_id, compute=compute_summary)
             action = ret['action']
             if 'video' in ret:
                 imagined_video = ret['video']
@@ -713,25 +770,35 @@ def eval_policy(task_name,
                         raise NotImplementedError
                     TASK_ENV.take_action(ee_action, action_type='ee')
                    
-                    if (j+1) % action_per_frame == 0:
+                    if (j+1) % action_per_frame == 0 or TASK_ENV.eval_success:
                         obs = format_obs(TASK_ENV.get_obs(), prompt)
                         full_obs_list.append(obs)
                         key_frame_list.append(obs)
-                    
-            first = False
+                    if TASK_ENV.eval_success:
+                        break
+                if TASK_ENV.eval_success:
+                    break
 
-            model.infer(dict(obs = key_frame_list, compute_kv_cache=True, imagine=False, save_visualization=save_visualization, state=action))
-  
+            first = False
+            if key_frame_list:
+                snapshots.write(key_frame_list[-1], rollout_chunk, TASK_ENV.take_action_cnt, TASK_ENV.eval_success)
+            rollout_chunk += 1
+
+            # A terminal partial chunk is never sent as a complete cache update.
             if TASK_ENV.eval_success:
                 succ = True
                 break
+            cache_ret = model.infer(dict(obs = key_frame_list, compute_kv_cache=True, imagine=False, save_visualization=save_visualization, state=action))
+            if cache_ret.get('compute') is not None:
+                compute_summary = cache_ret['compute']
+                record_episode(run_config, now_id, compute=compute_summary)
       
 
-        vis_dir = Path(args['save_root']) / f'stseed-{st_seed}' / 'visualization' / task_name
+        vis_dir = Path(args['save_root']) / 'videos'
         vis_dir.mkdir(parents=True, exist_ok=True)
-        video_name = f"{now_id}_{prompt.replace(' ', '_')}_{succ}.mp4"
+        video_name = f"episode_{now_id:03d}.mp4"
         out_img_file = vis_dir / video_name
-        save_comparison_video(
+        profile.call("video_encoding", save_comparison_video,
             real_obs_list=full_obs_list,
             imagined_video=None, #gen_video_list,
             action_history=full_action_history,
@@ -747,6 +814,14 @@ def eval_policy(task_name,
         else:
             print("\033[91mFail!\033[0m")
 
+        profile.close(success=succ)
+        record_episode(
+            run_config, now_id, status="completed", success=bool(succ),
+            simulator_action_count=int(TASK_ENV.take_action_cnt),
+            policy_action_calls=len(full_action_history), observation_count=len(full_obs_list),
+            video_path=str(out_img_file.resolve()), video_playback_fps=15,
+            profile_path=str(profile.output.resolve()) if profile.enabled else None,
+        )
         now_id += 1
         TASK_ENV.close_env(clear_cache=((succ_seed + 1) % clear_cache_freq == 0))
 
@@ -755,15 +830,6 @@ def eval_policy(task_name,
 
         TASK_ENV.test_num += 1
 
-        save_dir = Path(args['save_root']) / f'stseed-{st_seed}' / 'metrics' / task_name
-        save_dir.mkdir(parents=True, exist_ok=True)
-        out_json_file = save_dir / 'res.json'
-        write_json({
-          "succ_num": float(TASK_ENV.suc),
-          "total_num": float(TASK_ENV.test_num),
-          "succ_rate": float(TASK_ENV.suc / TASK_ENV.test_num),
-        }, out_json_file)
-        
         print(
             f"\033[93m{task_name}\033[0m | \033[94m{args['policy_name']}\033[0m | \033[92m{args['task_config']}\033[0m | \033[91m{args['ckpt_setting']}\033[0m\n"
             f"Success rate: \033[96m{TASK_ENV.suc}/{TASK_ENV.test_num}\033[0m => \033[95m{round(TASK_ENV.suc/TASK_ENV.test_num*100, 1)}%\033[0m, current seed: \033[90m{now_seed}\033[0m\n"
@@ -779,7 +845,8 @@ def parse_args_and_config():
     parser.add_argument("--overrides", nargs=argparse.REMAINDER)
     parser.add_argument("--port", type=int, default=8000, help='remote policy socket port.')
     parser.add_argument("--save_root", type=str, default="results/default_vis_path")
-    parser.add_argument("--video_guidance_scale", type=float, default=-1.0)
+    parser.add_argument("--text_guidance_scale", "--video_guidance_scale",
+                        dest="video_guidance_scale", type=float, default=1.0)
     parser.add_argument("--action_guidance_scale", type=float, default=1.0)
     parser.add_argument("--icl_guidance_scale", type=float, default=5.0)
     parser.add_argument(
@@ -787,7 +854,17 @@ def parse_args_and_config():
         type=str,
         default="evaluation/robotwin/robotwin_icl_human_videos.py",
     )
-    parser.add_argument("--icl_latent_root", type=str, required=True)
+    parser.add_argument("--use_icl", type=int, choices=[0, 1], default=1,
+                        help="Cache the human demonstration in the transformer (default: 1)")
+    parser.add_argument("--use_text", type=int, choices=[0, 1], default=0,
+                        help="Use instruction text in BOTH target and human-context streams")
+    parser.add_argument("--use_guidance", type=int, choices=[0, 1], default=0,
+                        help="Enable DINO latent guidance (parameters configured on server)")
+    parser.add_argument("--render_samples_per_pixel", type=int, default=None,
+                        help="Ray tracing samples per pixel; default RENDER_SAMPLES_PER_PIXEL or 32")
+    parser.add_argument("--profile_timing", type=int, choices=[0, 1], default=0)
+    parser.add_argument("--profile_sync_gpu", type=int, choices=[0, 1], default=0)
+    parser.add_argument("--icl_latent_root", type=str, default="")
     parser.add_argument("--icl_seed", type=int, default=None)
     parser.add_argument("--start_seed", type=int, default=None)
     parser.add_argument("--episode_offset", type=int, default=0)
@@ -828,7 +905,7 @@ def parse_args_and_config():
 if __name__ == "__main__":
     if os.environ.get("ZERO_WAM_DIAGNOSTICS") == "1":
         faulthandler.enable()
-        faulthandler.dump_traceback_later(180, repeat=True)
-    Sapien_TEST()
     usr_args = parse_args_and_config()
+    configure_rendering(samples=usr_args.get("render_samples_per_pixel"))
+    Sapien_TEST()
     main(usr_args)

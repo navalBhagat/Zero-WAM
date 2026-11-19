@@ -1,0 +1,72 @@
+# Zero-WAM experiments
+
+Tools for planning RoboTwin runs, replaying saved predictions, and explaining results.
+Run commands from the repository root. Historical results in `stages/` are preserved.
+
+## Pick a workflow
+
+| Goal | Entry point | Resources | Submits a job? |
+| --- | --- | --- | --- |
+| Validate cache/memory behavior | `scripts/run_stage00.py` | A100 | Only with `--submit` |
+| Plan or launch a campaign | `scripts/robotwin_suite.py` | A100 | Only with `--submit` |
+| Diagnose whole-image DINO correspondence | `jobs/progress_matching.sbatch` | CPU (Rome) | Yes, through `sbatch` |
+| Compare temporal targets offline | `scripts/03_temporal_guidance_test.py` | CPU | No |
+| Replay strengths/decoder precision | `scripts/precision_replay.py` | GPU, VAE+DINO only | No |
+| Submit the small strength replay | `jobs/strength_replay.sbatch` | A100 | Yes, through `sbatch` |
+| Summarize a campaign | `analysis/analyze.py` | CPU | No |
+
+Paths in this table are relative to `experiments/`. Each entry point supports
+`--help`, except Slurm job files. A dry run writes a manifest and source snapshot;
+use a different manifest path for submission. Existing manifests are never overwritten.
+
+## Quick start
+
+First follow [setup and running](docs/running.md) to configure the existing Snellius
+environments and local checkpoints. Stage 00 validates memory before larger runs.
+
+```bash
+# Preview one guidance episode; no GPU is allocated by this command.
+python experiments/scripts/robotwin_suite.py guidance \
+  --tasks place_object_scale --seeds 0 --episodes 1 \
+  --guidance-modes guidance --guidance-selectors window \
+  --spp 8 --phase-separation --compact-cache \
+  --time 01:00:00 --client-timeout 3000 --minutes-per-episode 20 \
+  --manifest experiments/stages/guidance_preview/manifest.json
+
+# Submit the saved-prediction strength test from the repository root.
+sbatch experiments/jobs/strength_replay.sbatch
+
+# Analyze an existing campaign without rerunning it.
+python experiments/analysis/analyze.py experiments/stages/03_guidance_pilot/manifest.json
+```
+
+Use your current `--budget-sbu` when submitting a campaign. The built-in balance is
+an old planning default, not a live account balance.
+
+## Read the results
+
+```text
+campaign/
+  manifest.json + manifest.source.zip
+  runs/TASK_JOBID/
+    config.json       # Effective settings, seeds, outcomes and artifact paths
+    results.csv       # One readable row per episode
+    videos/           # Short episode filenames
+    references/       # Selected targets, observations and alignment traces
+    diagnostics/      # Logs, timings, FLOP coverage and optional deep diagnostics
+  analysis/
+    results.csv       # One row per task/condition
+    success.png
+    cost.png
+```
+
+The default analysis has one CSV and two plots. Extra tables/plots require
+`--diagnostics`. See [outputs and compute](docs/outputs.md) for units, missing values,
+FLOP assumptions, and compatibility with older runs.
+
+## Guides
+
+- [Setup, stages, submission and resume](docs/running.md)
+- [Output files, timing, success and FLOPs](docs/outputs.md)
+- [Temporal matching and strength/precision diagnostics](docs/diagnostics.md)
+- [Code organization and regression checks](docs/development.md)

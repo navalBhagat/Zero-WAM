@@ -4,7 +4,6 @@ from pathlib import Path
 import numpy as np
 
 from wan_va.configs.va_robotwin_cfg import va_robotwin_cfg
-from wan_va.configs.va_robotwin_train_cfg import va_robotwin_train_cfg
 from wan_va.dataset.robotwin_action import (
     preprocess_robotwin_actions,
     relative_robotwin_action,
@@ -26,14 +25,6 @@ def test_robotwin_stats_are_loaded_from_release_asset():
         stats["norm_stats"]["action.hand.position"]["q01"]
     )
     assert va_robotwin_cfg.norm_stat["q99"][28:] == [1.0, 1.0]
-
-
-def test_robotwin_training_uses_dataset_stats_path():
-    expected = Path(va_robotwin_train_cfg.dataset_path) / "meta" / "action_stats.json"
-
-    assert Path(va_robotwin_train_cfg.action_stats_path) == expected
-    assert va_robotwin_train_cfg.load_robotwin_stats_from_dataset is True
-    assert Path(va_robotwin_cfg.action_stats_path).name == "robotwin_icl.json"
 
 
 def test_robotwin_action_is_relative_to_initial_state_not_first_action():

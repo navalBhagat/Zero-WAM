@@ -5,8 +5,6 @@
 #SBATCH --cpus-per-task=2
 #SBATCH --time=00:15:00
 #SBATCH --output=zerowam_download_%j.out
-#SBATCH --mail-type=BEGIN,END,FAIL
-#SBATCH --mail-user=navaltbhagat@gmail.com
 
 # Portable CPU-only template: set partition/time/account at submission to match
 # local policy. Initialize cluster modules in your shell before submitting.

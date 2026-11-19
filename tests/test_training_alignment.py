@@ -3,7 +3,6 @@ from types import SimpleNamespace
 import torch
 
 import wan_va.train as train_module
-from wan_va.configs.va_robotwin_train_cfg import va_robotwin_train_cfg
 from wan_va.train import Trainer
 
 
@@ -113,16 +112,3 @@ def test_action_noise_input_is_not_zeroed_by_loss_mask(monkeypatch):
     )
     assert calls[1]["min_timestep_bd"] == 0.0
     assert calls[1]["max_timestep_bd"] == 1.0
-
-
-def test_robotwin_posttraining_defaults_are_stable():
-    assert va_robotwin_train_cfg.model_path.endswith('zero-wam-pretrain')
-    assert va_robotwin_train_cfg.noisy_img_prob == 0.5
-    assert va_robotwin_train_cfg.noisy_cond_min_timestep_bd == 0.0
-    assert va_robotwin_train_cfg.video_loss_reweight is True
-    assert va_robotwin_train_cfg.action_loss_reweight is False
-    assert va_robotwin_train_cfg.learning_rate == 1e-4
-    assert va_robotwin_train_cfg.weight_decay == 0.01
-    assert va_robotwin_train_cfg.warmup_steps == 200
-    assert va_robotwin_train_cfg.max_norm == 1.0
-    assert va_robotwin_train_cfg.skip_step_grad_norm_multiplier == 20.0

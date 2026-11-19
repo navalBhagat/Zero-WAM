@@ -1,0 +1,65 @@
+{
+  "render": {
+    "argv": [
+      "render",
+      "--manifest",
+      "/tmp/refactor-contract/manifest.json"
+    ],
+    "digest": "688ddab70ada9609d407b2bca44e3ae96f4dd5767c9b4623293e3c5b595cc4d5",
+    "runs": 3
+  },
+  "baselines": {
+    "argv": [
+      "baselines",
+      "--manifest",
+      "/tmp/refactor-contract/manifest.json"
+    ],
+    "digest": "581c3abdcaa7e91a45f9498abcae5eab2334b6d07f362eb36599be642fb2db51",
+    "runs": 12
+  },
+  "guidance": {
+    "argv": [
+      "guidance",
+      "--manifest",
+      "/tmp/refactor-contract/manifest.json"
+    ],
+    "digest": "350256708b8456fc2d502670d8c26287a1a6a2b64143650c029e91a832183a09",
+    "runs": 24
+  },
+  "precision": {
+    "argv": [
+      "precision",
+      "--manifest",
+      "/tmp/refactor-contract/manifest.json"
+    ],
+    "digest": "c936cdfb180e810ff164e2c86c113f5ac84b88132a405cf68c78e8bf8ba5b95a",
+    "runs": 24
+  },
+  "distance": {
+    "argv": [
+      "guidance",
+      "--manifest",
+      "/tmp/refactor-contract/manifest.json",
+      "--tasks",
+      "place_object_scale",
+      "--seeds",
+      "0",
+      "--episodes",
+      "1",
+      "--guidance-modes",
+      "guidance",
+      "--guidance-selectors",
+      "window",
+      "--lookahead-mode",
+      "dino_distance",
+      "--spp",
+      "8",
+      "--compact-cache",
+      "--phase-separation",
+      "--diagnostics",
+      "--capture-guidance"
+    ],
+    "digest": "c372a422c8a578b1f9d0ae832dd155ccde3c274c47f3435b2a00a695a1708a38",
+    "runs": 1
+  }
+}
