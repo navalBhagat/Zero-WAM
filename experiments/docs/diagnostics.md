@@ -180,3 +180,46 @@ That is a known speed-prior limitation, not evidence DINO cannot recognize succe
 Use the unconstrained scores to assess visual evidence first. Do not interpret
 this short successful rollout's constrained-path accuracy as a fair test of the
 prior without later calibrating the transition model on both trajectories.
+
+## Initial-frame-relative matching: reuse both label sets
+
+```bash
+sbatch experiments/jobs/relative_matching.sbatch
+```
+
+This submits one CPU-only Rome job, without policy inference, VAE reconstruction,
+or simulator execution. It reuses the exported human reference PNGs from
+`stages/progress_matching/job_29488053`, the failed rollout's raw robot PNGs, and
+successful ICL images from `stages/progress_matching_icl/job_29489163/robot_frames`.
+Both existing `labels.csv` files in those stage directories are read unchanged.
+Reference labels must agree. Override CLI paths after the script name if inputs
+are moved. A local DINO checkpoint is required on Snellius.
+
+For each trajectory separately, compare:
+
+- Absolute cosine similarity of the normalized whole-image DINO embeddings.
+- Relative cosine: subtract each domain's own initial embedding, normalize those
+  change vectors, and compare directions. Reference frames with near-zero change
+  have no direction and are excluded.
+- Relative L2: compare unnormalized change vectors, preserving magnitude.
+- Stay-at-start: always predict human frame 0, exposing class imbalance.
+
+The matcher uses no labels or temporal prior. Initial observations are excluded
+from every method's accuracy because they define the anchors. Relative methods
+abstain for near-zero robot change (norm <= 1e-6); on labelled noninitial
+observations, abstentions count as incorrect. Thus denominators are 12 for failure
+and 5 for success when all current observations are labelled. Missing predicted
+reference-stage labels also count as incorrect; blank robot labels are excluded.
+
+Outputs in `experiments/stages/relative_matching/job_<JOB_ID>/`:
+`results.csv`, `matching.png`, `stage_agreement.png`, cached `embeddings.npz`, and
+`provenance.json` with input hashes. Recomputing absolute scores from exported
+reference PNGs introduces quantization relative to the original floating-point
+VAE outputs; all three visual methods use the same PNG reference in this test.
+Success robot images additionally have video compression.
+
+Look for improvement on **both** success and failure, rather than pooled accuracy.
+A method that stays early may score well on failure but miss successful lifting.
+A method that always selects late frames may match terminal success by chance.
+Relative changes may still be dominated by arm motion or different camera geometry;
+this experiment does not presume they encode semantic progress.

@@ -4,5 +4,3 @@ stages/
 runs/
 precision/
 *.source.zip
-strength_replay/
-progress_matching/
