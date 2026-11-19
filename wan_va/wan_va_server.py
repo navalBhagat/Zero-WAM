@@ -617,13 +617,15 @@ class VA_Server:
         icl_guidance_scale,
         use_text=None,
         use_guidance=None,
+        target_text_source=None,
+        icl_text_source=None,
     ):
         import os
         from .guidance.instrumentation import ResetTimer
         reset_timer = ResetTimer(self)
         self.active_reset_timer = reset_timer
         from .conditioning import flag
-        self.icl_text_source = os.environ.get("ICL_TEXT_SOURCE", "target")
+        self.icl_text_source = icl_text_source or os.environ.get("ICL_TEXT_SOURCE", "target")
         self.use_text = flag(getattr(self.job_config, "use_text", False) if use_text is None else use_text, "use_text")
         self.use_guidance = flag(getattr(self.job_config, "use_guidance", False) if use_guidance is None else use_guidance, "use_guidance")
         self.external_strength = (getattr(self.job_config, "guidance_strength", 0.01)
@@ -772,7 +774,7 @@ class VA_Server:
             not self.use_icl_cfg and self.video_guidance_scale > 1.0
         )
         from .conditioning import select_target_text
-        self.target_text_source = os.environ.get("TARGET_TEXT_SOURCE", "instruction")
+        self.target_text_source = target_text_source or os.environ.get("TARGET_TEXT_SOURCE", "instruction")
         self.target_prompt_embeds = select_target_text(
             self.use_text, self.target_text_source, self.prompt_embeds, self.negative_prompt_embeds,
         )
@@ -900,6 +902,47 @@ class VA_Server:
         logger.info("[guidance-reference] %s", selection)
         return selection
 
+    def _video_velocity(self, latents, timestep, update_cache=False):
+        """Evaluate the video flow without changing history unless explicitly requested."""
+        latent_input = latents.to(self.dtype).clone()
+        if self.chunk_idx == 0:
+            latent_input[:, :, :1] = self.init_latent[:, :, :1]
+        input_dict = self._prepare_icl_stream(
+            latent_input, timestep, "video", PREDICTION_CACHE_TYPE
+        )
+        if self.chunk_idx == 0:
+            # CFG repeats the temporal axis as [cond frames, uncond
+            # frames].  The observed first frame is clean in every branch.
+            input_dict["latent_res_lst"]["timesteps"][
+                ::self.job_config.frame_chunk_size
+            ] = 0
+        noise = self.transformer(
+            input_dict,
+            update_cache=int(update_cache),
+            cache_name=self.cache_name,
+            mode="forward_latent_only",
+        )
+        if update_cache:
+            return None
+        if self.use_icl_cfg:
+            noise_cond, noise_uncond = noise.chunk(2, dim=1)
+            noise = noise_uncond + self.icl_guidance_scale * (
+                noise_cond - noise_uncond
+            )
+        elif self.target_text_cfg_active:
+            noise_cond, noise_uncond = noise.chunk(2, dim=1)
+            noise = noise_uncond + self.video_guidance_scale * (
+                noise_cond - noise_uncond
+            )
+        noise = data_seq_to_patch(
+            self.transformer.patch_size,
+            noise,
+            self.job_config.frame_chunk_size,
+            self.latent_height,
+            self.latent_width,
+        )
+        return noise
+
     def _infer_icl(self, obs):
         profile = getattr(self.job_config, "profile_timing", False)
         if profile:
@@ -942,6 +985,20 @@ class VA_Server:
         # Consume inactive-channel noise before masking so seeded sampling stays
         # deterministic across chunks.
         _ = torch.randn_like(actions)[:, ~self.action_mask]
+        if "video_noise" in obs:
+            replacement = torch.as_tensor(obs["video_noise"], device=self.device, dtype=latents.dtype)
+            if replacement.shape != latents.shape:
+                raise ValueError("Video noise shape does not match the current chunk")
+            latents = replacement.clone()
+        if "action_noise" in obs:
+            replacement = torch.as_tensor(obs["action_noise"], device=self.device, dtype=actions.dtype)
+            if replacement.shape != actions.shape:
+                raise ValueError("Action noise shape does not match the current chunk")
+            actions = replacement.clone()
+        capture_directory = getattr(self, "noise_capture_directory", None)
+        if capture_directory:
+            initial_video_noise = latents.detach().cpu()
+            initial_action_noise = actions.detach().cpu()
         self.scheduler.set_timesteps(self.job_config.num_inference_steps)
         self.action_scheduler.set_timesteps(
             self.job_config.action_num_inference_steps
@@ -962,42 +1019,8 @@ class VA_Server:
         video_started = time.perf_counter()
         for step, timestep in enumerate(video_timesteps):
             last_step = step == len(video_timesteps) - 1
-            latent_input = latents.clone()
-            if self.chunk_idx == 0:
-                latent_input[:, :, :1] = self.init_latent[:, :, :1]
-            input_dict = self._prepare_icl_stream(
-                latent_input, timestep, "video", PREDICTION_CACHE_TYPE
-            )
-            if self.chunk_idx == 0:
-                # CFG repeats the temporal axis as [cond frames, uncond
-                # frames].  The observed first frame is clean in every branch.
-                input_dict["latent_res_lst"]["timesteps"][
-                    ::self.job_config.frame_chunk_size
-                ] = 0
-            noise = self.transformer(
-                input_dict,
-                update_cache=int(last_step),
-                cache_name=self.cache_name,
-                mode="forward_latent_only",
-            )
+            noise = self._video_velocity(latents, timestep, update_cache=last_step)
             if not last_step:
-                if self.use_icl_cfg:
-                    noise_cond, noise_uncond = noise.chunk(2, dim=1)
-                    noise = noise_uncond + self.icl_guidance_scale * (
-                        noise_cond - noise_uncond
-                    )
-                elif self.target_text_cfg_active:
-                    noise_cond, noise_uncond = noise.chunk(2, dim=1)
-                    noise = noise_uncond + self.video_guidance_scale * (
-                        noise_cond - noise_uncond
-                    )
-                noise = data_seq_to_patch(
-                    self.transformer.patch_size,
-                    noise,
-                    self.job_config.frame_chunk_size,
-                    self.latent_height,
-                    self.latent_width,
-                )
                 # Perform Euler arithmetic in the persistent state's precision.
                 noise = noise.to(latents.dtype)
                 base_next = self.scheduler.step(
@@ -1083,6 +1106,12 @@ class VA_Server:
         cached_actions = actions.clone()
         if self.chunk_idx == 0:
             cached_actions[:, :, 0] = 0
+        if capture_directory:
+            from .noise_inversion.artifacts import ChunkStore
+            ChunkStore(Path(capture_directory) / "chunks").save(
+                self.chunk_idx, video=latents, video_noise=initial_video_noise,
+                action_noise=initial_action_noise, initial_frame=self.init_latent[:, :, :1],
+                actions=cached_actions)
         self.last_predicted_latents = latents
         self.last_predicted_actions = cached_actions
         logger.info(f"[ICL] cache after infer: {self.transformer.cache_counts()}")
@@ -1125,6 +1154,11 @@ class VA_Server:
         # Cache normalized model output directly to avoid a postprocess/preprocess
         # round trip.
         action_input = self.last_predicted_actions.to(latent_input)
+
+        if getattr(self, "noise_capture_directory", None):
+            from .noise_inversion.artifacts import ChunkStore
+            ChunkStore(Path(self.noise_capture_directory) / "history").save(
+                self.chunk_idx, video=latent_input, actions=action_input)
 
         video_input = self._prepare_icl_stream(
             latent_input, 0, "video", OBSERVATION_CACHE_TYPE
@@ -1173,6 +1207,8 @@ class VA_Server:
         icl_guidance_scale=None,
         use_text=None,
         use_guidance=None,
+        target_text_source=None,
+        icl_text_source=None,
     ):
         if self.use_icl_model:
             return self._reset_icl(
@@ -1187,6 +1223,7 @@ class VA_Server:
                 if icl_guidance_scale is None
                 else icl_guidance_scale,
                 use_text=use_text, use_guidance=use_guidance,
+                target_text_source=target_text_source, icl_text_source=icl_text_source,
             )
         logger.info('Reset.')
         self.use_cfg = (self.job_config.guidance_scale > 1) or (self.job_config.action_guidance_scale > 1)
@@ -1445,7 +1482,7 @@ class VA_Server:
             target_text_source=getattr(self, "target_text_source", "instruction"),
             icl_context_text=(None if getattr(self, "cached_caption_used", False)
                               else model_text if self.use_icl else None),
-            icl_text_source=os.environ.get("ICL_TEXT_SOURCE", "target"),
+            icl_text_source=getattr(self, "icl_text_source", "target"),
             cached_caption_used=getattr(self, "cached_caption_used", False),
             icl_guidance_scale=self.icl_guidance_scale if self.use_icl else None,
             text_guidance_scale=self.video_guidance_scale if self.use_text else None,
@@ -1461,7 +1498,7 @@ class VA_Server:
             video_inference_steps=self.job_config.num_inference_steps,
             action_inference_steps=self.job_config.action_num_inference_steps,
             frame_chunk_size=self.job_config.frame_chunk_size,
-            sampling_seed=int(os.environ["SAMPLING_SEED"]) if os.environ.get("SAMPLING_SEED") else None,
+            sampling_seed=getattr(self, "sampling_seed", None),
             reset_profile=getattr(self, 'last_reset_profile', None),
             guidance=guidance,
         )
@@ -1474,11 +1511,20 @@ class VA_Server:
         compute_kv_cache = obs.get('compute_kv_cache', False)
 
         if self.use_icl_model:
+            if obs.get("invert_episode"):
+                from .noise_inversion.runtime import invert_episode
+                self.noise_capture_directory = None
+                return dict(inversion=invert_episode(self, obs["invert_episode"], prompt))
             if reset:
+                self.noise_capture_directory = obs.get("noise_capture_directory")
+                if self.noise_capture_directory and not self.job_config.video_state_fp32:
+                    raise ValueError("Noise inversion capture requires VIDEO_STATE_FP32=1")
                 self._reset(
                     prompt=prompt,
                     use_icl=obs.get("use_icl", getattr(self.job_config, "use_icl", True)),
                     use_text=obs.get("use_text"),
+                    target_text_source=obs.get("target_text_source"),
+                    icl_text_source=obs.get("icl_text_source"),
                     use_guidance=obs.get("use_guidance"),
                     icl_video_path=obs.get("icl_video_path", ""),
                     icl_latent_path=obs.get("icl_latent_path", ""),
@@ -1491,7 +1537,8 @@ class VA_Server:
                 )
                 # Seed after loading reference/encoder so their initialization
                 # cannot change paired guided/unguided sampling noise.
-                sampling_seed = os.environ.get("SAMPLING_SEED")
+                sampling_seed = obs.get("sampling_seed", os.environ.get("SAMPLING_SEED"))
+                self.sampling_seed = int(sampling_seed) if sampling_seed is not None else None
                 if sampling_seed is not None:
                     torch.manual_seed(int(sampling_seed))
                     torch.cuda.manual_seed_all(int(sampling_seed))
@@ -1499,6 +1546,14 @@ class VA_Server:
             if compute_kv_cache:
                 self._compute_icl_kv_cache(obs)
                 return dict()
+            if obs.get("noise_replay_directory"):
+                if self.use_icl or self.use_guidance or not self.use_text or self.target_text_source != "instruction":
+                    raise ValueError("Noise replay requires instruction text with ICL and reward guidance disabled")
+                from .noise_inversion.artifacts import ChunkStore
+                store = ChunkStore(Path(obs["noise_replay_directory"]) / "inverted")
+                if self.chunk_idx >= store.count():
+                    return dict(noise_exhausted=True)
+                obs = dict(obs, **store.load(self.chunk_idx))
             action = self._infer_icl(obs)
             return dict(action=action, guidance_reference=getattr(self, "last_guidance_selection", None))
 

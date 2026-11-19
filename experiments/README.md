@@ -70,3 +70,9 @@ FLOP assumptions, and compatibility with older runs.
 - [Output files, timing, success and FLOPs](docs/outputs.md)
 - [Temporal matching and strength/precision diagnostics](docs/diagnostics.md)
 - [Code organization and regression checks](docs/development.md)
+
+## Noise inversion pilot
+
+See [noise inversion](docs/noise_inversion.md) for a one-episode ICL capture,
+text-only inversion, and closed-loop replay for bread basket and object scale.
+Cluster entry point: `sbatch experiments/jobs/noise_inversion.sbatch`.

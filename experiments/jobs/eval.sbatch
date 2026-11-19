@@ -186,6 +186,13 @@ done
 
 SERVER_READY=$(date +%s)
 CLIENT_STARTED=$(date +%s)
+if [[ "${NOISE_INVERSION_PILOT:-0}" == "1" ]]; then
+    timeout --kill-after=15s "${CLIENT_TIMEOUT}s" python experiments/scripts/noise_inversion_pilot.py \
+        --output "$RUN_DIR/noise_inversion" --sampling-seed "$SAMPLING_SEED" --simulator-seed "$SEED"
+    CLIENT_FINISHED=$(date +%s)
+    exit 0
+fi
+
 echo "Server ready. Evaluating $TASK for $TEST_NUM episode(s). Results: $RUN_DIR"
 timeout --kill-after=15s "${CLIENT_TIMEOUT}s" bash evaluation/robotwin/launch_client.sh "$RUN_DIR" "$TASK" \
     2>&1 | tee "$RUN_DIR/diagnostics/client.log"

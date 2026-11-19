@@ -566,6 +566,16 @@ def eval_policy(task_name,
     suc_test_seed_list = []
 
 
+    noise_mode = os.environ.get("NOISE_INVERSION_MODE")
+    noise_directory = os.environ.get("NOISE_INVERSION_DIRECTORY")
+    source_episode = None
+    if noise_mode == "replay":
+        import json
+        source_config = Path(noise_directory) / "capture" / "config.json"
+        source_episode = json.loads(source_config.read_text())["episodes"][0]
+        if not source_episode.get("success"):
+            raise ValueError("Replay requires a successful captured episode")
+        st_seed = source_episode["simulator_seed"]
     now_seed = st_seed
     clear_cache_freq = args["clear_cache_freq"]
 
@@ -582,11 +592,15 @@ def eval_policy(task_name,
                 TASK_ENV.close_env()
             except UnStableError as e:
                 TASK_ENV.close_env()
+                if source_episode is not None:
+                    raise RuntimeError("The recorded simulator seed could not be reproduced")
                 now_seed += 1
                 args["render_freq"] = render_freq
                 continue
             except Exception as e:
                 TASK_ENV.close_env()
+                if source_episode is not None:
+                    raise RuntimeError("The recorded simulator seed could not be reproduced")
                 now_seed += 1
                 args["render_freq"] = render_freq
                 print(f"error occurs ! {e}")
@@ -597,6 +611,8 @@ def eval_policy(task_name,
             succ_seed += 1
             suc_test_seed_list.append(now_seed)
         else:
+            if source_episode is not None:
+                raise RuntimeError("Recorded scene no longer passes expert feasibility")
             now_seed += 1
             args["render_freq"] = render_freq
             continue
@@ -613,6 +629,8 @@ def eval_policy(task_name,
         episode_info_list = [episode_info["info"]]
         results = generate_episode_descriptions(args["task_name"], episode_info_list, test_num)
         instruction = np.random.choice(results[0][instruction_type])
+        if source_episode is not None:
+            instruction = source_episode["task_instruction"]
         TASK_ENV.set_instruction(instruction=instruction)  # set language instruction
 
         if TASK_ENV.eval_video_path is not None:
@@ -679,6 +697,13 @@ def eval_policy(task_name,
         ret = diagnostic_call("server reset / human-context cache", model.infer,
             dict(
                 reset=True,
+                **(dict(noise_capture_directory=noise_directory,
+                        sampling_seed=int(os.environ.get("SAMPLING_SEED", "1234")),
+                        target_text_source="empty", icl_text_source="cached")
+                   if noise_mode == "capture" else
+                   dict(target_text_source="instruction", icl_text_source="target",
+                        sampling_seed=int(os.environ.get("SAMPLING_SEED", "1234")))
+                   if noise_mode == "replay" else {}),
                 prompt=prompt,
                 save_visualization=save_visualization,
                 use_icl=args["use_icl"],
@@ -721,18 +746,29 @@ def eval_policy(task_name,
         snapshots.write(initial_formatted_obs, -1, TASK_ENV.take_action_cnt, TASK_ENV.eval_success)
         rollout_chunk = 0
         first_obs = None
+        noise_exhausted = False
         while TASK_ENV.take_action_cnt<TASK_ENV.step_lim:
             if first:
                 observation = diagnostic_call("first-chunk camera capture", TASK_ENV.get_obs)
                 first_obs = format_obs(observation, prompt)
 
-            ret = diagnostic_call("action-chunk inference", model.infer, dict(obs=first_obs, prompt=prompt, save_visualization=save_visualization, video_guidance_scale=video_guidance_scale, action_guidance_scale=action_guidance_scale))
+            inference_request = dict(
+                obs=first_obs, prompt=prompt, save_visualization=save_visualization,
+                video_guidance_scale=video_guidance_scale,
+                action_guidance_scale=action_guidance_scale,
+            )
+            if noise_mode == "replay":
+                inference_request["noise_replay_directory"] = noise_directory
+            ret = diagnostic_call("action-chunk inference", model.infer, inference_request)
             if ret.get('guidance_reference') is not None:
                 guidance_selections.append(ret['guidance_reference'])
                 record_episode(run_config, now_id, guidance_selections=guidance_selections)
             if ret.get('compute') is not None:
                 compute_summary = ret['compute']
                 record_episode(run_config, now_id, compute=compute_summary)
+            if ret.get("noise_exhausted"):
+                noise_exhausted = True
+                break
             action = ret['action']
             if 'video' in ret:
                 imagined_video = ret['video']
@@ -817,6 +853,8 @@ def eval_policy(task_name,
         profile.close(success=succ)
         record_episode(
             run_config, now_id, status="completed", success=bool(succ),
+            noise_sequence_exhausted=noise_exhausted,
+            rollout_chunks=rollout_chunk,
             simulator_action_count=int(TASK_ENV.take_action_cnt),
             policy_action_calls=len(full_action_history), observation_count=len(full_obs_list),
             video_path=str(out_img_file.resolve()), video_playback_fps=15,
