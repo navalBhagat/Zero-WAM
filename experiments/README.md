@@ -9,6 +9,7 @@ Run commands from the repository root. Historical results in `stages/` are prese
 | --- | --- | --- | --- |
 | Validate cache/memory behavior | `scripts/run_stage00.py` | A100 | Only with `--submit` |
 | Plan or launch a campaign | `scripts/robotwin_suite.py` | A100 | Only with `--submit` |
+| Diagnose whole-image DINO correspondence | `jobs/progress_matching.sbatch` | CPU (Rome) | Yes, through `sbatch` |
 | Compare temporal targets offline | `scripts/03_temporal_guidance_test.py` | CPU | No |
 | Replay strengths/decoder precision | `scripts/precision_replay.py` | GPU, VAE+DINO only | No |
 | Submit the small strength replay | `jobs/strength_replay.sbatch` | A100 | Yes, through `sbatch` |

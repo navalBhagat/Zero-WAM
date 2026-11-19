@@ -194,7 +194,7 @@ def _merge(server, record):
 def profile_policy_call(function):
     @wraps(function)
     def wrapped(server, obs, *args, **kwargs):
-        if os.environ.get('COUNT_POLICY_FLOPS','1')!='1':
+        if os.environ.get('COUNT_POLICY_FLOPS','0')!='1':
             return function(server,obs,*args,**kwargs)
         reset=bool(obs.get('reset'))
         if reset:

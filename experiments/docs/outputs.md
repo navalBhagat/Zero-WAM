@@ -42,7 +42,12 @@ seeds for paired comparisons; one successful episode is not a success-rate study
 
 ## FLOPs
 
-`COUNT_POLICY_FLOPS=1` is the default. The counter observes actual enabled text,
+`COUNT_POLICY_FLOPS=0` is the default; opt in with `--flop-count` for calibration.
+Without counting, runtime operator totals remain missing, not zero. Workload logs
+remain available to the existing offline estimator, whose coverage is partial.
+A calibrated full-policy offline estimator is not yet implemented.
+
+When enabled, The counter observes actual enabled text,
 ICL and guidance paths, plus observation encoding, cache updates and video/action
 inference. Guidance includes backward through frozen DINO/VAE weights to the latent;
 it does not introduce transformer backward or parameter updates.

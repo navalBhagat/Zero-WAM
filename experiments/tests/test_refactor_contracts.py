@@ -25,7 +25,8 @@ def test_campaign_settings_match_pre_refactor_fixture(case):
         (Path(__file__).parent / "fixtures/campaign_settings.json").read_text()
     )
     expected = fixtures[case]
-    options = parser().parse_args(expected["argv"])
+    # The refactor contract retains the historical explicit accounting setting.
+    options = parser().parse_args(expected["argv"] + ["--flop-count"])
     runs = specifications(options)
     canonical = json.dumps(runs, sort_keys=True).replace(str(ROOT), "<ROOT>")
     assert len(runs) == expected["runs"]

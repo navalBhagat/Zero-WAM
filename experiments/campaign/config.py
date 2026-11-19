@@ -129,7 +129,14 @@ def parser() -> argparse.ArgumentParser:
     recording_options.add_argument(
         "--no-flop-count",
         action="store_true",
+        default=True,
         help="Disable operator accounting; record missing FLOPs rather than zeros",
+    )
+    recording_options.add_argument(
+        "--flop-count",
+        dest="no_flop_count",
+        action="store_false",
+        help="Opt in to slow runtime operator accounting for calibration",
     )
     guidance_options.add_argument(
         "--reference-source", choices=["auto", "video", "latent"], default="auto"

@@ -56,7 +56,10 @@ CLI settings override job defaults. Use `--help` for all flags grouped by purpos
 
 Use `--diagnostics` for package inventories, action hashes and cache/offload traces.
 Use `--capture-guidance` to save a prediction for later strength/precision replay.
-FLOP counting is on by default; `--no-flop-count` disables it.
+Runtime FLOP counting is off by default. Use `--flop-count` only for short
+calibration runs; Python operator interception can substantially slow inference.
+Lightweight component shapes/call counts remain logged for offline estimates.
+`--no-flop-count` remains supported for existing commands.
 
 ## Seeds and resume
 

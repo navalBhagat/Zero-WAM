@@ -110,12 +110,12 @@ def test_operator_totals_are_used_by_analysis(tmp_path):
     assert row["operator_counting_available"]
 
 
-def test_suite_defaults_to_counting_and_compact_output(tmp_path):
+def test_suite_defaults_to_no_counting_and_compact_output(tmp_path):
     args = parser().parse_args(["guidance", "--manifest", str(tmp_path / "a.json")])
     for run in specifications(args):
         env = run["environment"]
         assert (
-            env["COUNT_POLICY_FLOPS"] == "1"
+            env["COUNT_POLICY_FLOPS"] == "0"
             and env["RUN_DIAGNOSTICS"] == "0"
             and env["SAVE_GUIDANCE_CAPTURE"] == "0"
         )
@@ -212,3 +212,12 @@ def test_compact_collection_and_compute_plot_end_to_end(tmp_path):
     assert summary[0]["total_policy_tflops"] == 2
     report.plots(tmp_path, summary)
     assert (tmp_path / "success.png").is_file() and (tmp_path / "cost.png").is_file()
+
+
+def test_runtime_flop_count_is_opt_in(tmp_path):
+    args = parser().parse_args(
+        ["guidance", "--flop-count", "--manifest", str(tmp_path / "a.json")]
+    )
+    assert all(
+        r["environment"]["COUNT_POLICY_FLOPS"] == "1" for r in specifications(args)
+    )

@@ -58,6 +58,7 @@ def test_unknown_float_operation_is_explicit():
 
 
 def test_request_counts_reset_and_backward_and_disabled_mode(tmp_path,monkeypatch):
+    monkeypatch.setenv("COUNT_POLICY_FLOPS", "1")
     class Server:
         save_root=str(tmp_path)
         workload_episode=0
@@ -94,3 +95,12 @@ def test_compiled_attention_counts_dense_once():
     assert result.shape==(1,2,3,6)
     assert counter.summary()['counted_flops']==2*1*2*3*5*(4+6)
     assert counter.dense_attention and not counter.unknown
+
+
+def test_operator_counting_defaults_off(monkeypatch):
+    monkeypatch.delenv("COUNT_POLICY_FLOPS", raising=False)
+    class Server:
+        @flops.profile_policy_call
+        def infer(self, obs):
+            return {"ok": True}
+    assert Server().infer({}) == {"ok": True}
