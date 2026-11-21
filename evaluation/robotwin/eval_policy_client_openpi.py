@@ -569,7 +569,7 @@ def eval_policy(task_name,
     noise_mode = os.environ.get("NOISE_INVERSION_MODE")
     noise_directory = os.environ.get("NOISE_INVERSION_DIRECTORY")
     source_episode = None
-    if noise_mode == "replay":
+    if noise_mode in ("replay", "control"):
         import json
         source_config = Path(noise_directory) / "capture" / "config.json"
         source_episode = json.loads(source_config.read_text())["episodes"][0]
@@ -703,11 +703,11 @@ def eval_policy(task_name,
                    if noise_mode == "capture" else
                    dict(target_text_source="empty", icl_text_source="target",
                         sampling_seed=int(os.environ.get("SAMPLING_SEED", "1234")))
-                   if noise_mode == "replay" else {}),
+                   if noise_mode in ("replay", "control") else {}),
                 prompt=prompt,
                 save_visualization=save_visualization,
                 use_icl=args["use_icl"],
-                use_text=False if noise_mode == "replay" else args["use_text"],
+                use_text=False if noise_mode in ("replay", "control") else args["use_text"],
                 use_guidance=args["use_guidance"],
                 icl_video_path=icl_video_path,
                 icl_latent_path=icl_latent_path,
@@ -757,8 +757,9 @@ def eval_policy(task_name,
                 video_guidance_scale=video_guidance_scale,
                 action_guidance_scale=action_guidance_scale,
             )
-            if noise_mode == "replay":
+            if noise_mode in ("replay", "control"):
                 inference_request["noise_replay_directory"] = noise_directory
+                inference_request["noise_source"] = "original" if noise_mode == "control" else "inverted"
             ret = diagnostic_call("action-chunk inference", model.infer, inference_request)
             if ret.get('guidance_reference') is not None:
                 guidance_selections.append(ret['guidance_reference'])

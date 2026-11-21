@@ -129,6 +129,17 @@ class InversionTests(unittest.TestCase):
             server = types.SimpleNamespace(use_icl_model=True, use_icl=False,
                 use_guidance=False, use_text=False, target_text_source="empty", chunk_idx=1)
             result = namespace["infer"](server, dict(noise_replay_directory=directory))
+            ChunkStore(Path(directory) / "chunks").save(
+                0, video_noise=torch.full((1,), 7.), action_noise=torch.full((1,), 3.))
+            requests = []
+            server._infer_icl = lambda request: requests.append(request) or "actions"
+            server.chunk_idx = 0
+            namespace["infer"](server, dict(noise_replay_directory=directory, noise_source="original"))
+            torch.testing.assert_close(requests[-1]["video_noise"], torch.full((1,), 7.))
+            torch.testing.assert_close(requests[-1]["action_noise"], torch.full((1,), 3.))
+            server.chunk_idx = 1
+            namespace["infer"](server, dict(noise_replay_directory=directory, noise_source="original"))
+            self.assertNotIn("video_noise", requests[-1])
             server.use_text = True
             with self.assertRaisesRegex(ValueError, "language, ICL"):
                 namespace["infer"](server, dict(noise_replay_directory=directory))

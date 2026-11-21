@@ -187,8 +187,12 @@ done
 SERVER_READY=$(date +%s)
 CLIENT_STARTED=$(date +%s)
 if [[ "${NOISE_INVERSION_PILOT:-0}" == "1" ]]; then
-    timeout --kill-after=15s "${CLIENT_TIMEOUT}s" python experiments/scripts/noise_inversion_pilot.py \
-        --output "$RUN_DIR/noise_inversion" --sampling-seed "$SAMPLING_SEED" --simulator-seed "$SEED"
+    if [[ -n "${NOISE_INVERSION_CONTROL_SOURCE:-}" ]]; then
+        pilot_args=(--control-source "$NOISE_INVERSION_CONTROL_SOURCE")
+    else
+        pilot_args=(--output "$RUN_DIR/noise_inversion" --sampling-seed "$SAMPLING_SEED" --simulator-seed "$SEED")
+    fi
+    timeout --kill-after=15s "${CLIENT_TIMEOUT}s" python experiments/scripts/noise_inversion_pilot.py "${pilot_args[@]}"
     CLIENT_FINISHED=$(date +%s)
     exit 0
 fi

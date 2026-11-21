@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from experiments.noise_inversion.pilot import run_pilot
+from experiments.noise_inversion.pilot import run_pilot, run_controls
 
 
 class PilotTests(unittest.TestCase):
@@ -38,6 +38,36 @@ class PilotTests(unittest.TestCase):
         self.assertNotIn("prompt", events[1][1])
         self.assertEqual(events[2][1]["USE_GUIDANCE"], "0")
         self.assertEqual(summary["simulator_seed"], 100002)
+
+    def test_control_appends_to_existing_pilot(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            task = root / "place_bread_basket"
+            capture = task / "capture"
+            capture.mkdir(parents=True)
+            episode = dict(status="completed", success=True, simulator_seed=100007, icl_seed=0,
+                server=dict(video_state_dtype="torch.float32", compact_observation_cache=True,
+                            phase_separation=False),
+                rendering=dict(samples_per_pixel_effective=16))
+            (capture / "config.json").write_text(json.dumps(dict(episodes=[episode])))
+            (task / "summary.json").write_text(json.dumps(dict(sampling_seed=1234, source_chunks=5)))
+
+            def launch(output, name, environment):
+                self.assertEqual(output, task / "control")
+                self.assertEqual(environment["USE_TEXT"], "0")
+                self.assertEqual(environment["START_SEED"], "100007")
+                self.assertEqual(environment["NOISE_INVERSION_MODE"], "control")
+                output.mkdir()
+                result = dict(status="completed", success=True, rollout_chunks=7)
+                (output / "config.json").write_text(json.dumps(dict(episodes=[result])))
+
+            run_controls(root, ["place_bread_basket"], launch)
+            summary = json.loads((task / "summary.json").read_text())
+            self.assertTrue(summary["control_success"])
+            self.assertFalse(summary["control_success_within_source_horizon"])
+            self.assertTrue(summary["control_extended_beyond_saved_noise"])
+            with self.assertRaises(FileExistsError):
+                run_controls(root, ["place_bread_basket"], launch)
 
     def test_source_failure_skips_inversion_and_replay(self):
         events, summary = self.exercise(False)

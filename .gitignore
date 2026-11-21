@@ -33,3 +33,4 @@ data/
 *.safetensors
 
 .DS_Store
+.vscode/

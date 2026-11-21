@@ -1550,10 +1550,20 @@ class VA_Server:
                 if self.use_icl or self.use_guidance or self.use_text:
                     raise ValueError("Noise replay requires language, ICL, and reward guidance disabled")
                 from .noise_inversion.artifacts import ChunkStore
-                store = ChunkStore(Path(obs["noise_replay_directory"]) / "inverted")
+                noise_source = obs.get("noise_source", "inverted")
+                if noise_source not in ("inverted", "original"):
+                    raise ValueError("noise_source must be inverted or original")
+                folder = "chunks" if noise_source == "original" else "inverted"
+                store = ChunkStore(Path(obs["noise_replay_directory"]) / folder)
                 if self.chunk_idx >= store.count():
-                    return dict(noise_exhausted=True)
-                obs = dict(obs, **store.load(self.chunk_idx))
+                    if noise_source == "inverted":
+                        return dict(noise_exhausted=True)
+                    # Original-noise control may continue to the normal task limit.
+                    # _infer_icl still draws every chunk, even when overridden.
+                else:
+                    saved = store.load(self.chunk_idx)
+                    obs = dict(obs, video_noise=saved["video_noise"],
+                               action_noise=saved["action_noise"])
             action = self._infer_icl(obs)
             return dict(action=action, guidance_reference=getattr(self, "last_guidance_selection", None))
 

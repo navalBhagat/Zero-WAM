@@ -76,3 +76,27 @@ Good reconstruction is a numerical check, not a guarantee of rollout success:
 Actions without language/ICL can differ even given similar videos, and replay history can
 then diverge. This pilot has no same-noise baseline without language/ICL; it tests feasibility,
 not a measured improvement over ordinary sampling without language/ICL. A later experiment can add that control.
+
+## Append original-noise controls to an existing pilot
+
+Sync the updated code to Snellius, then submit from the repository root:
+
+```bash
+export NOISE_INVERSION_CONTROL_SOURCE="$PWD/experiments/stages/noise_inversion_pilot/runs/place_bread_basket_29492432/noise_inversion"
+sbatch experiments/jobs/noise_inversion_control.sbatch
+```
+
+If the original pilot is still under `experiments/runs/`, point the variable there
+instead. It must name the directory containing both task folders. This runs only
+one control per task, reusing the saved initial video/action noise and actual
+scene seed, with language, ICL and reward guidance disabled. The source capture
+and inversion are not repeated. Configurations, videos and profiles are written
+to `TASK/control/` beside `capture/` and `replay/`; `TASK/summary.json` is updated.
+Existing control directories are not overwritten. Server/job diagnostics for the
+new allocation are still stored under its own normal run directory.
+
+The control may continue beyond the captured noise horizon to the normal task
+limit, using the seeded Gaussian sequence after the saved chunks. The summary
+reports eventual `control_success`, `control_success_within_source_horizon`,
+and `control_extended_beyond_saved_noise` separately. Inverted-noise replay still
+stops when its saved sequence is exhausted.

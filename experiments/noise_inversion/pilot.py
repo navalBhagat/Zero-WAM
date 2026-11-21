@@ -47,3 +47,37 @@ def launch_client(directory: Path, task: str, environment: dict) -> None:
     from experiments.paths import ROOT
     subprocess.run(["bash", str(ROOT / "evaluation/robotwin/launch_client.sh"),
                     str(directory), task], env=environment, cwd=ROOT, check=True)
+
+
+def run_controls(source: Path, tasks: list[str], launch) -> None:
+    """Append original-noise controls to an existing pilot without rerunning ICL."""
+    for task in tasks:
+        root = source / task
+        summary_path = root / "summary.json"
+        summary = json.loads(summary_path.read_text())
+        episode = read_episode(root / "capture")
+        server = episode["server"]
+        if not episode["success"]:
+            raise ValueError(f"{task}: source episode did not succeed")
+        if (root / "control").exists():
+            raise FileExistsError(f"{root / 'control'} already exists")
+        # Match server-side precision/cache configuration before collecting a control.
+        expected = {"video_state_dtype": "torch.float32", "compact_observation_cache": True,
+                    "phase_separation": False}
+        for key, value in expected.items():
+            if server.get(key) != value:
+                raise ValueError(f"{task}: control launcher does not match source {key}")
+        environment = dict(os.environ, TEST_NUM="1", EPISODE_OFFSET="0", SEED="0",
+            START_SEED=str(episode["simulator_seed"]), ICL_SEED=str(episode["icl_seed"]),
+            SAMPLING_SEED=str(summary["sampling_seed"]), USE_ICL="0", USE_TEXT="0",
+            USE_GUIDANCE="0", TEXT_GUIDANCE_SCALE="1", ICL_GUIDANCE_SCALE="1",
+            RENDER_SAMPLES_PER_PIXEL=str(episode["rendering"]["samples_per_pixel_effective"]),
+            NOISE_INVERSION_MODE="control", NOISE_INVERSION_DIRECTORY=str(root))
+        launch(root / "control", task, environment)
+        control = read_episode(root / "control")
+        same_horizon = control["rollout_chunks"] <= summary["source_chunks"]
+        summary.update(control_success=control["success"],
+            control_chunks=control["rollout_chunks"],
+            control_success_within_source_horizon=bool(control["success"] and same_horizon),
+            control_extended_beyond_saved_noise=not same_horizon)
+        summary_path.write_text(json.dumps(summary, indent=2) + "\n")
