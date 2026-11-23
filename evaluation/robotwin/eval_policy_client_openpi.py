@@ -567,6 +567,10 @@ def eval_policy(task_name,
 
 
     noise_mode = os.environ.get("NOISE_INVERSION_MODE")
+    if noise_mode:
+        from evaluation.robotwin.watchdog import guard_method
+        guard_method(TASK_ENV, "take_action")
+        guard_method(TASK_ENV, "get_obs")
     noise_directory = os.environ.get("NOISE_INVERSION_DIRECTORY")
     source_episode = None
     if noise_mode in ("replay", "control"):
@@ -583,23 +587,29 @@ def eval_policy(task_name,
         args["render_freq"] = 0
 
         if noise_mode == "capture" and os.environ.get("NOISE_INVERSION_SCENE_REGISTRY"):
-            from experiments.noise_inversion.scenes import ProbeResult, SceneSearch, select_scene
+            from experiments.noise_inversion.scenes import ProbeResult, SceneSearch, select_scene, setup_rejection
+            from evaluation.robotwin.watchdog import guarded_call
 
             def probe_scene(candidate_seed):
                 try:
                     TASK_ENV.setup_demo(now_ep_num=now_id, seed=candidate_seed, is_test=True, **args)
-                    information = TASK_ENV.play_once()
+                    information = guarded_call("expert play_once", TASK_ENV.play_once)
                     feasible = bool(TASK_ENV.plan_success and TASK_ENV.check_success())
                     return ProbeResult(feasible, information,
                                        "" if feasible else "Expert plan or success check failed")
                 except UnStableError as error:
                     return ProbeResult(False, {}, f"Unstable scene: {error}")
+                except AssertionError as error:
+                    if not setup_rejection(error):
+                        raise
+                    return ProbeResult(False, {}, f"Expert grasp setup failed: {error}")
                 finally:
                     TASK_ENV.close_env()
 
             reserved = tuple(map(int, os.environ["NOISE_INVERSION_RESERVED_SCENES"].split(",")))
             search = SceneSearch(Path(os.environ["NOISE_INVERSION_SCENE_REGISTRY"]), st_seed,
-                                 reserved, int(os.environ["NOISE_INVERSION_MAX_SCENE_ATTEMPTS"]))
+                                 reserved, int(os.environ["NOISE_INVERSION_MAX_SCENE_ATTEMPTS"]),
+                                 Path(noise_directory) / "capture" / "scene_selection.json")
             now_seed, episode_info = select_scene(search, probe_scene)
             expert_check = False
 

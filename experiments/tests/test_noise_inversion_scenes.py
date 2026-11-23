@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 from experiments.io import read_json
-from experiments.noise_inversion.scenes import ProbeResult, SceneSearch, select_scene
+from experiments.noise_inversion.scenes import ProbeResult, SceneSearch, select_scene, setup_rejection
 
 
 class SceneSearchTests(unittest.TestCase):
@@ -65,6 +65,41 @@ class SceneSearchTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "exhausted 2"):
                     select_scene(search, lambda seed: ProbeResult(False, {}, "infeasible"))
             self.assertEqual(len(read_json(search.registry)["slots"]["10"]["attempts"]), 2)
+
+    def test_only_the_observed_grasp_assertion_is_infeasibility(self):
+        self.assertTrue(setup_rejection(AssertionError("target_pose cannot be None for move action.")))
+        self.assertFalse(setup_rejection(AssertionError("unexpected internal bug")))
+        self.assertFalse(setup_rejection(RuntimeError("CUDA out of memory")))
+
+    def test_capture_receipt_survives_lost_registry_and_recovers_other_noise(self):
+        from experiments.noise_inversion.records import save_json
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            receipt = root / "scene_10_noise_1/capture/scene_selection.json"
+            first = SceneSearch(root / "scenes.json", 10, (10, 11), receipt=receipt)
+            select_scene(first, lambda seed: ProbeResult(seed == 12, {}))
+            save_json(root / "scenes.json", dict(schema_version=1, slots={}))
+            self.assertEqual(first.accepted_seed(), 12)
+            second = SceneSearch(root / "scenes.json", 10, (10, 11),
+                                 receipt=root / "scene_10_noise_2/capture/scene_selection.json")
+            checked = []
+            def probe(seed):
+                checked.append(seed)
+                return ProbeResult(True, {})
+            select_scene(second, probe)
+            self.assertEqual(checked, [12])
+            self.assertEqual(second.accepted_seed(), 12)
+
+    def test_historical_completed_capture_recovers_missing_acceptance(self):
+        from experiments.noise_inversion.records import save_json
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            receipt = root / "scene_10_noise_1/capture/scene_selection.json"
+            save_json(receipt.parent / "config.json", dict(episodes=[
+                dict(status="completed", success=False, simulator_seed=10)]))
+            search = SceneSearch(root / "scenes.json", 10, (10, 11), receipt=receipt)
+            self.assertEqual(search.accepted_seed(), 10)
+            self.assertEqual(read_json(receipt)["accepted_seed"], 10)
 
     def test_previously_accepted_scene_is_never_silently_replaced(self):
         with tempfile.TemporaryDirectory() as temporary:

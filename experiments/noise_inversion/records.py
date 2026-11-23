@@ -1,13 +1,23 @@
 """Small, atomic records; completed task failures are valid experimental results."""
 import json
+import os
+from uuid import uuid4
 from pathlib import Path
 
 
 def save_json(path: Path, value: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(value, indent=2) + "\n")
-    temporary.replace(path)
+    # Exclusive creation preserves the usual umask/group permissions, unlike
+    # NamedTemporaryFile's owner-only permissions on shared campaign records.
+    temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    try:
+        with temporary.open("x") as stream:
+            stream.write(json.dumps(value, indent=2) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def read_episode(directory: Path) -> dict:

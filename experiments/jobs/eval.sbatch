@@ -191,7 +191,12 @@ done
 SERVER_READY=$(date +%s)
 CLIENT_STARTED=$(date +%s)
 if [[ "${NOISE_INVERSION_PILOT:-0}" == "1" ]]; then
-    if [[ -n "${NOISE_INVERSION_JOB_SETTINGS:-}" ]]; then
+    if [[ "${NOISE_INVERSION_REPAIR_PILOT:-0}" == "1" ]]; then
+        timeout --kill-after=15s "${CLIENT_TIMEOUT}s" python experiments/scripts/noise_inversion_repair.py \
+            --campaign "$NOISE_INVERSION_REPAIR_SOURCE" --job-output "$RUN_DIR"
+        CLIENT_FINISHED=$(date +%s)
+        exit 0
+    elif [[ -n "${NOISE_INVERSION_JOB_SETTINGS:-}" ]]; then
         retry_args=()
         if [[ "${NOISE_INVERSION_RETRY:-0}" == "1" ]]; then retry_args+=(--retry-incomplete); fi
         timeout --kill-after=15s "${CLIENT_TIMEOUT}s" python experiments/scripts/noise_inversion_campaign.py run \

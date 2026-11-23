@@ -1,11 +1,12 @@
 """Bounded feasible-scene search, shared across every noise in a scene slot."""
+from __future__ import annotations
 from dataclasses import dataclass
 import fcntl
 from pathlib import Path
 from typing import Callable
 
 from experiments.io import read_json
-from .records import save_json
+from .records import save_json, read_episode
 
 
 @dataclass(frozen=True)
@@ -21,6 +22,7 @@ class SceneSearch:
     requested_seed: int
     reserved_seeds: tuple[int, ...]
     max_attempts: int = 20
+    receipt: Path | None = None
 
     def __post_init__(self):
         if self.requested_seed not in self.reserved_seeds or self.max_attempts < 1:
@@ -32,10 +34,48 @@ class SceneSearch:
                     NOISE_INVERSION_MAX_SCENE_ATTEMPTS=str(self.max_attempts))
 
     def accepted_seed(self) -> int:
+        if self.receipt is not None and self.receipt.exists():
+            receipt = read_json(self.receipt)
+            if receipt["requested_seed"] != self.requested_seed:
+                raise ValueError("Scene receipt belongs to a different slot")
+            return receipt["accepted_seed"]
         entry = read_json(self.registry, {}).get("slots", {}).get(str(self.requested_seed), {})
         if entry.get("accepted_seed") is None:
+            # Older captures predate receipts. A completed source is independent
+            # evidence of the actual scene; do not throw away its saved tensors.
+            if self.receipt is not None and (self.receipt.parent / "config.json").exists():
+                source = read_episode(self.receipt.parent)
+                seed = source["simulator_seed"]
+                if seed in self.reserved_seeds and seed != self.requested_seed:
+                    raise ValueError("Captured scene conflicts with another reserved slot")
+                _save_receipt(self, seed)
+                return seed
             raise ValueError("Captured source has no recorded accepted scene")
         return entry["accepted_seed"]
+
+
+def setup_rejection(error: BaseException) -> bool:
+    """Recognize only the observed expert missing-grasp-pose assertion."""
+    return isinstance(error, AssertionError) and str(error) == "target_pose cannot be None for move action."
+
+
+def _restore_receipts(data: dict, registry: Path) -> None:
+    """Capture-local receipts retain accepted scenes even if a registry snapshot is lost."""
+    for path in registry.parent.glob("scene_*/capture/scene_selection.json"):
+        receipt = read_json(path)
+        slot, accepted = str(receipt["requested_seed"]), receipt["accepted_seed"]
+        if any(other_slot != slot and other["accepted_seed"] == accepted
+               for other_slot, other in data["slots"].items()):
+            raise ValueError(f"Accepted scene {accepted} belongs to multiple slots")
+        entry = data["slots"].setdefault(slot, dict(accepted_seed=None, candidate_seed=accepted, attempts=[]))
+        if entry["accepted_seed"] not in (None, accepted):
+            raise ValueError(f"Conflicting scene receipts for slot {slot}")
+        entry["accepted_seed"] = accepted
+
+
+def _save_receipt(search: SceneSearch, seed: int) -> None:
+    if search.receipt is not None:
+        save_json(search.receipt, dict(requested_seed=search.requested_seed, accepted_seed=seed))
 
 
 def _replacement_seed(data: dict, reserved: tuple[int, ...]) -> int:
@@ -62,6 +102,7 @@ def select_scene(search: SceneSearch, probe: Callable[[int], ProbeResult]) -> tu
         if data.get("search_settings", identity) != identity:
             raise ValueError("Scene-search settings changed; use a new campaign")
         data["search_settings"] = identity
+        _restore_receipts(data, search.registry)
         entry = data["slots"].setdefault(str(search.requested_seed), dict(
             accepted_seed=None, candidate_seed=search.requested_seed, attempts=[]))
         accepted = entry["accepted_seed"]
@@ -80,6 +121,7 @@ def select_scene(search: SceneSearch, probe: Callable[[int], ProbeResult]) -> tu
                 raise
             attempt["status"] = "rechecked"
             save_json(search.registry, data)
+            _save_receipt(search, accepted)
             return accepted, result.episode_info
 
         while sum(a["status"] not in ("rechecked", "rechecking") for a in entry["attempts"]) < search.max_attempts:
@@ -97,6 +139,7 @@ def select_scene(search: SceneSearch, probe: Callable[[int], ProbeResult]) -> tu
                 attempt["status"] = "accepted"
                 entry["accepted_seed"] = seed
                 save_json(search.registry, data)
+                _save_receipt(search, seed)
                 return seed, result.episode_info
             attempt.update(status="infeasible", reason=result.reason)
             entry["candidate_seed"] = _replacement_seed(data, search.reserved_seeds)

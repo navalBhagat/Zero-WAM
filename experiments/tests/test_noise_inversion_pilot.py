@@ -141,6 +141,27 @@ class PilotTests(unittest.TestCase):
             self.assertEqual(summary["requested_scene_seed"], 100000)
             self.assertEqual(summary["simulator_seed"], 100002)
 
+    def test_capture_only_repair_archives_old_partial_outputs(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            save_json(root / "trial.json", dict(source_digest="old"))
+            save_json(root / "capture/config.json", dict(episodes=[dict(status="running")]))
+            def launch(folder, task, env):
+                tensors(root / "chunks")
+                save_json(folder / "config.json", dict(episodes=[episode(task, 100000, False, "capture")]))
+            def no_inversion(request):
+                self.fail("Capture-only pilot must not invoke inversion")
+            summary = run_trial(root, Trial("place_bread_basket", 100000, 1234), no_inversion,
+                                launch, digest="new", repair=True, capture_only=True)
+            self.assertTrue(summary["pilot_capture_complete"])
+            self.assertEqual(summary["status"], "incomplete")
+            self.assertFalse((root / "control").exists())
+            self.assertEqual(len(list(root.glob("attempts/*/trial.json"))), 1)
+            save_json(root / "summary.json", dict(status="completed"))
+            with self.assertRaisesRegex(ValueError, "completed paired trial"):
+                run_trial(root, Trial("place_bread_basket", 100000, 1234), no_inversion,
+                          launch, digest="new", repair=True, capture_only=True)
+
     def test_legacy_controls_accept_failed_source(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

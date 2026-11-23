@@ -52,7 +52,8 @@ scenes per task, with both noises evaluated on each accepted scene.
 Each task has a locked `scenes.json` registry shared by all of its noise trials.
 Once a slot is accepted, later noises recheck that exact scene; they never replace
 it independently. Unexpected exceptions/crashes are logged as errors, not skipped
-as infeasible. Explicit instability and failed expert checks trigger replacement.
+as infeasible. Explicit instability, failed expert checks and the known expert
+missing-grasp-pose assertion trigger replacement.
 `plan --max-scene-attempts 20` bounds search per slot, cumulatively across retries.
 Exhausting the limit or the job's walltime leaves the trial incomplete, rather than
 spending without a bound. Allocation limits are left to Slurm.
@@ -234,3 +235,58 @@ each axis and both grippers open. Setup also installs these two overrides.
 The grouped launcher retains this step, so capture/control/replay use the same
 success definition. These files were already present; no criteria restoration
 or relaxation was needed for the grouped campaign.
+
+## Small repair pilot after a stalled/OOM campaign
+
+Stop the old stalled jobs first and sync the updated code. From the checkout:
+
+```bash
+sbatch experiments/jobs/noise_inversion_repair.sbatch
+```
+
+This requests **one GPU for at most 45 minutes** and runs only three source
+captures, sequentially on one model server:
+
+| Task | Requested scene slot | Model noise | Check |
+| --- | ---: | ---: | --- |
+| Stapler pad | 100002 | 1234 | Previously stalled action execution |
+| Stack blocks three | 100000 | 1234 | Previously exhausted memory on a long rollout |
+| Object scale | 100001 | 1234 | Missing-grasp-pose setup rejection and scene replacement |
+
+The default campaign is `$HOME/Zero-WAM/experiments/stages/noise_inversion_full`.
+Override `NOISE_INVERSION_REPAIR_SOURCE` if needed. New captures/noises/snapshots
+are saved directly under the original `trials/TASK/scene_SLOT_noise_NOISE/` paths.
+An explicit repair archives old incomplete trial artifacts and their original
+identity under that trial's `attempts/` before starting fresh. Fully completed
+paired trials are never overwritten; an active trial lock also prevents repair.
+
+Shared logs and `repair_summary.json` are under
+`noise_inversion_full/repair_jobs/job_JOBID/`. Each source's own log remains
+`trials/TASK/scene_SLOT_noise_NOISE/capture/client.log`.
+
+This pilot does **not** run control, inversion or replay. Its summary remains
+`incomplete` for the paired experiment and includes `pilot_capture_complete=true`
+when source capture finishes; failed policy execution still counts as a finished
+capture. Do not interpret these diagnostic captures as complete paired results.
+
+The pilot enables the existing `PHASE_SEPARATION=1` transformer offload around
+VAE encoding. This is a memory mitigation requiring GPU validation, not a proved
+numerically identical replacement for the old sharded path. Matched full trials
+must use the same offload configuration for all conditions; do not mix old
+completed phases with new offloaded phases. The main campaign default is left
+unchanged pending this test.
+
+Action execution, observations and expert execution have a **90-second watchdog**
+that dumps a stack trace and exits instead of waiting hours. A source phase also
+has a 20-minute process timeout; the whole pilot has a 40-minute client timeout.
+The watchdog bounds/diagnoses a native stall; it does not claim to repair an
+unknown planner/physics deadlock. Inspect its traceback before another run.
+
+Only the exact observed expert assertion `target_pose cannot be None for move
+action.` is treated as infeasibility; other assertions, GPU failures and crashes
+remain errors. Scene selection also writes capture-local `scene_selection.json`
+receipts, recovers accepted slots from these receipts, and can recover a missing
+receipt from a completed historical capture. Conflicting accepted scenes are
+rejected, not silently reconciled. Shared JSON records now use unique temporary
+files and fsync before atomic replacement. These harden persistence without
+claiming that the original registry inconsistency's underlying cause was proved.
