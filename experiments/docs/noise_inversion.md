@@ -39,7 +39,7 @@ python experiments/scripts/noise_inversion_campaign.py submit \
 Jobs are ordered noise → task, so the first seven cover all seven tasks at
 sampling seed 1234. The next seven use sampling seed 5678. `--limit` counts jobs,
 not scenes; `--limit 14` submits the entire default grid. Jobs within one submit
-batch use sequential afterany dependencies. Available tasks: `place_bread_basket`, `place_object_scale`, `open_microwave`,
+batch have no dependencies and can run in parallel, subject to Slurm availability. Available tasks: `place_bread_basket`, `place_object_scale`, `open_microwave`,
 `place_empty_cup`, `stamp_seal`, `move_stapler_pad`, `stack_blocks_three`.
 Use `plan --tasks ... --scene-seeds ... --sampling-seeds ...` for a smaller grid.
 Scene seeds are initial scene-slot candidates (e.g. 100000), not the legacy

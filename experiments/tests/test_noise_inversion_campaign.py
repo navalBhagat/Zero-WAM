@@ -44,8 +44,8 @@ class CampaignTests(unittest.TestCase):
                 self.assertEqual(jobs, ["11", "12"])
                 command = sbatch.call_args_list[1].args[0]
                 self.assertIn("--account=account_a", command)
-                self.assertIn("--dependency=afterany:11", command)
-                self.assertNotIn("--dependency=afterany:11", sbatch.call_args_list[0].args[0])
+                self.assertTrue(all(not any(arg.startswith("--dependency") for arg in call.args[0])
+                                    for call in sbatch.call_args_list))
                 jobs = campaign.submit(root, "account_b", limit=1)
                 self.assertEqual(jobs, ["13"])
                 data = json.loads((root / "manifest.json").read_text())

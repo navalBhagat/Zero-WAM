@@ -84,7 +84,6 @@ def submit(directory: Path, account: str | None = None, limit: int = 7,
         pending = pending[:limit]
         ceiling = manifest["hours_per_job"] * manifest["sbu_per_hour"]
         identifiers = []
-        previous = None
         minutes = round(manifest["hours_per_job"] * 60)
         for run in pending:
             job_root = directory / "jobs" / run["name"]
@@ -96,8 +95,6 @@ def submit(directory: Path, account: str | None = None, limit: int = 7,
                        f"--output={job_root}/slurm_%j.out", "--job-name=zw_noise_" + run["task"]]
             if account:
                 command.append(f"--account={account}")
-            if previous:
-                command.append(f"--dependency=afterany:{previous}")
             command.append(str(ROOT / "experiments/jobs/noise_inversion_campaign.sbatch"))
             excluded = set(CONTROLLED) | {k for k in os.environ if k.startswith("NOISE_INVERSION_")}
             environment = {k: v for k, v in os.environ.items() if k not in excluded}
@@ -122,7 +119,6 @@ def submit(directory: Path, account: str | None = None, limit: int = 7,
             attempt.update(status="submitted", job_id=job_id)
             save_json(path, manifest)
             identifiers.append(job_id)
-            previous = job_id
         return identifiers
 
 
