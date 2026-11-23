@@ -162,6 +162,24 @@ python -c "import sys; print('EXECUTABLE:', sys.executable, flush=True); print('
 export PYTHONPATH="$ZERO_WAM_ROOT:$ROBOTWIN_ROOT:${PYTHONPATH:-}"
 python experiments/scripts/job_report.py preflight
 
+run_camera_checks() {
+    local failed=0
+    local camera_task camera_seed
+    for camera_task in move_stapler_pad place_object_scale; do
+        camera_seed=100002
+        if [[ "$camera_task" == "place_object_scale" ]]; then camera_seed=100006; fi
+        mkdir -p "$RUN_DIR/$camera_task"
+        timeout --kill-after=15s 300s python setup/robotwin/check_camera.py \
+            --task "$camera_task" --seed "$camera_seed" --frames 200 --timeout 280 \
+            --output "$RUN_DIR/$camera_task" > "$RUN_DIR/$camera_task/client.log" 2>&1 || failed=1
+    done
+    return "$failed"
+}
+if [[ "${CAMERA_STRESS_TEST:-0}" == "1" && "${CAMERA_LOAD_MODEL:-0}" == "0" ]]; then
+    run_camera_checks
+    exit 0
+fi
+
 SERVER_STARTED=$(date +%s)
 # Separate subprocess environments, sharing the same allocated GPU and node.
 (
@@ -190,6 +208,11 @@ done
 
 SERVER_READY=$(date +%s)
 CLIENT_STARTED=$(date +%s)
+if [[ "${CAMERA_STRESS_TEST:-0}" == "1" ]]; then
+    run_camera_checks
+    CLIENT_FINISHED=$(date +%s)
+    exit 0
+fi
 if [[ "${NOISE_INVERSION_PILOT:-0}" == "1" ]]; then
     if [[ "${NOISE_INVERSION_REPAIR_PILOT:-0}" == "1" ]]; then
         timeout --kill-after=15s "${CLIENT_TIMEOUT}s" python experiments/scripts/noise_inversion_repair.py \

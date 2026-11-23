@@ -22,6 +22,8 @@ def main():
     parser.add_argument("--campaign", type=Path, required=True)
     parser.add_argument("--job-output", type=Path, required=True)
     parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", "29056")))
+    parser.add_argument("--tasks", nargs="+", choices=[target[0] for target in TARGETS],
+                        default=os.environ.get("NOISE_INVERSION_REPAIR_TASKS", "").split() or None)
     args = parser.parse_args()
     root = args.campaign.resolve()
     manifest = read_json(root / "manifest.json")
@@ -35,6 +37,8 @@ def main():
     client = WebsocketClientPolicy(host="127.0.0.1", port=args.port)
     results = []
     for task, scene, noise in TARGETS:
+        if args.tasks is not None and task not in args.tasks:
+            continue
         trial = Trial(task, scene, noise)
         directory = trial.directory(root)
         if not directory.exists():

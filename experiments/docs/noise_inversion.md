@@ -290,3 +290,52 @@ receipt from a completed historical capture. Conflicting accepted scenes are
 rejected, not silently reconciled. Shared JSON records now use unique temporary
 files and fsync before atomic replacement. These harden persistence without
 claiming that the original registry inconsistency's underlying cause was proved.
+
+## Staged camera and OOM diagnostics
+
+Keep 16 samples/pixel, path depth 8 and OIDN fixed initially. Submit stage 1:
+
+```bash
+sbatch experiments/jobs/noise_inversion_camera.sbatch
+```
+
+This requests one GPU for at most 15 minutes, with no model server. It captures
+200 observations per scene for stapler seed 100002 and scale seed 100006, with a
+five-minute process limit per scene. Each individual take_picture has a 90-second
+watchdog. Per-camera begin/end records are flushed to camera_timing.jsonl; the
+last unmatched begin identifies the blocked camera. First and last RGB frames
+are saved; every frame is checked for finite uint8 image data. These fixed-scene
+captures include physics stepping but do not reproduce the original robot actions.
+Passing does not rule out a pose-dependent failure.
+
+Only after inspecting stage 1, submit the same captures with model weights loaded:
+
+```bash
+sbatch --export=ALL,CAMERA_LOAD_MODEL=1 experiments/jobs/noise_inversion_camera.sbatch
+```
+
+This stage also requests at most 15 minutes. It tests baseline model/renderer GPU
+coexistence; it does not build ICL/history caches or run inference. If stage 1
+fails, do not pay for stage 2 before inspecting the camera traceback. Outputs are
+under noise_inversion_full/camera_tests/model_STAGE_job_JOBID/TASK/, with shared
+server/GPU logs in the job's diagnostics/. No paired trial results are overwritten.
+A denoiser-off comparison is deliberately not automatic: choose it after reviewing
+the unchanged-renderer results, and record it as a different rendering condition.
+
+Test long-history OOM separately:
+
+```bash
+sbatch experiments/jobs/noise_inversion_oom.sbatch
+```
+
+This is a single stack_blocks_three source capture (slot 100000, noise 1234),
+maximum 25 minutes, using expandable_segments allocation plus existing VAE
+transformer offload. It retains the normal 1200-action task limit and full KV
+history. It explicitly repairs the original incomplete trial, preserving the old
+attempt, and uses the same trial and repair_jobs paths as the repair pilot above.
+Success means completed capture (policy success or reaching the normal action
+limit), not merely getting past chunk 32. A timeout is inconclusive for full-horizon
+memory safety. Compare cache_memory.jsonl, phase_separation.jsonl, GPU logs and
+any allocation traceback. Expandable allocation may reduce fragmentation; it does
+not bound live KV-cache growth. A repeat OOM requires another memory strategy
+before a full campaign. No control/inversion/replay is run by these diagnostics.
