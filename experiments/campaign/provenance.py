@@ -17,7 +17,7 @@ def files() -> list:
             if p.suffix in (".py", ".sh", ".json", ".yml", ".yaml")
             and "__pycache__" not in p.parts
         ]
-    for folder in ("scripts", "analysis", "jobs", "tests", "campaign", "replay"):
+    for folder in ("scripts", "analysis", "jobs", "tests", "campaign", "replay", "noise_inversion"):
         paths += [
             p
             for p in (ROOT / "experiments" / folder).rglob("*")

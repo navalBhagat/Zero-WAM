@@ -140,6 +140,13 @@ class InversionTests(unittest.TestCase):
             server.chunk_idx = 1
             namespace["infer"](server, dict(noise_replay_directory=directory, noise_source="original"))
             self.assertNotIn("video_noise", requests[-1])
+            continued = namespace["infer"](server, dict(noise_replay_directory=directory,
+                noise_source="inverted", noise_continuation="gaussian"))
+            self.assertTrue(continued["noise_fallback"])
+            self.assertNotIn("video_noise", requests[-1])
+            with self.assertRaisesRegex(ValueError, "noise_continuation"):
+                namespace["infer"](server, dict(noise_replay_directory=directory,
+                    noise_continuation="invalid"))
             server.use_text = True
             with self.assertRaisesRegex(ValueError, "language, ICL"):
                 namespace["infer"](server, dict(noise_replay_directory=directory))

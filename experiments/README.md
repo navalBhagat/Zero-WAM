@@ -71,8 +71,18 @@ FLOP assumptions, and compatibility with older runs.
 - [Temporal matching and strength/precision diagnostics](docs/diagnostics.md)
 - [Code organization and regression checks](docs/development.md)
 
-## Noise inversion pilot
+## Noise inversion campaign
 
-See [noise inversion](docs/noise_inversion.md) for a one-episode ICL capture,
-inversion and closed-loop replay without language or ICL for bread basket and object scale.
-Cluster entry point: `sbatch experiments/jobs/noise_inversion.sbatch`.
+See [noise inversion](docs/noise_inversion.md) for the seven-task paired campaign:
+ICL, no ICL/language with original noise, and no ICL/language with recovered noise.
+The planner creates 14 task/noise jobs (five scenes and one model server per job),
+a flat trial layout, and a reproducible manifest without submitting:
+
+```bash
+python experiments/scripts/noise_inversion_campaign.py plan \
+  --directory experiments/stages/noise_campaign_01
+```
+
+Submit bounded batches (Slurm uses your login default account); generate the supervisor
+success table, bar charts and descriptive analysis with the `report` subcommand
+(`--no-plots` for tables only). Historical pilot commands remain supported.

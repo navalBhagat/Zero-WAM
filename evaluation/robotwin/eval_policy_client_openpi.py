@@ -570,11 +570,8 @@ def eval_policy(task_name,
     noise_directory = os.environ.get("NOISE_INVERSION_DIRECTORY")
     source_episode = None
     if noise_mode in ("replay", "control"):
-        import json
-        source_config = Path(noise_directory) / "capture" / "config.json"
-        source_episode = json.loads(source_config.read_text())["episodes"][0]
-        if not source_episode.get("success"):
-            raise ValueError("Replay requires a successful captured episode")
+        from experiments.noise_inversion.records import read_episode
+        source_episode = read_episode(Path(noise_directory) / "capture")
         st_seed = source_episode["simulator_seed"]
     now_seed = st_seed
     clear_cache_freq = args["clear_cache_freq"]
@@ -585,6 +582,27 @@ def eval_policy(task_name,
         render_freq = args["render_freq"]
         args["render_freq"] = 0
 
+        if noise_mode == "capture" and os.environ.get("NOISE_INVERSION_SCENE_REGISTRY"):
+            from experiments.noise_inversion.scenes import ProbeResult, SceneSearch, select_scene
+
+            def probe_scene(candidate_seed):
+                try:
+                    TASK_ENV.setup_demo(now_ep_num=now_id, seed=candidate_seed, is_test=True, **args)
+                    information = TASK_ENV.play_once()
+                    feasible = bool(TASK_ENV.plan_success and TASK_ENV.check_success())
+                    return ProbeResult(feasible, information,
+                                       "" if feasible else "Expert plan or success check failed")
+                except UnStableError as error:
+                    return ProbeResult(False, {}, f"Unstable scene: {error}")
+                finally:
+                    TASK_ENV.close_env()
+
+            reserved = tuple(map(int, os.environ["NOISE_INVERSION_RESERVED_SCENES"].split(",")))
+            search = SceneSearch(Path(os.environ["NOISE_INVERSION_SCENE_REGISTRY"]), st_seed,
+                                 reserved, int(os.environ["NOISE_INVERSION_MAX_SCENE_ATTEMPTS"]))
+            now_seed, episode_info = select_scene(search, probe_scene)
+            expert_check = False
+
         if expert_check:
             try:
                 TASK_ENV.setup_demo(now_ep_num=now_id, seed=now_seed, is_test=True, **args)
@@ -592,15 +610,15 @@ def eval_policy(task_name,
                 TASK_ENV.close_env()
             except UnStableError as e:
                 TASK_ENV.close_env()
-                if source_episode is not None:
-                    raise RuntimeError("The recorded simulator seed could not be reproduced")
+                if source_episode is not None or os.environ.get("NOISE_INVERSION_STRICT_SCENE") == "1":
+                    raise RuntimeError("The requested simulator seed could not be reproduced")
                 now_seed += 1
                 args["render_freq"] = render_freq
                 continue
             except Exception as e:
                 TASK_ENV.close_env()
-                if source_episode is not None:
-                    raise RuntimeError("The recorded simulator seed could not be reproduced")
+                if source_episode is not None or os.environ.get("NOISE_INVERSION_STRICT_SCENE") == "1":
+                    raise RuntimeError("The requested simulator seed could not be reproduced")
                 now_seed += 1
                 args["render_freq"] = render_freq
                 print(f"error occurs ! {e}")
@@ -611,8 +629,8 @@ def eval_policy(task_name,
             succ_seed += 1
             suc_test_seed_list.append(now_seed)
         else:
-            if source_episode is not None:
-                raise RuntimeError("Recorded scene no longer passes expert feasibility")
+            if source_episode is not None or os.environ.get("NOISE_INVERSION_STRICT_SCENE") == "1":
+                raise RuntimeError("Requested scene does not pass expert feasibility")
             now_seed += 1
             args["render_freq"] = render_freq
             continue
@@ -742,11 +760,13 @@ def eval_policy(task_name,
         from evaluation.robotwin.rollout_snapshots import RolloutSnapshots
         snapshots = RolloutSnapshots(
             Path(args['save_root']) / 'diagnostics' / 'snapshots' / f'episode_{now_id:03d}',
-            enabled=os.environ.get("SAVE_ROLLOUT_SNAPSHOTS", "0") == "1")
+            enabled=noise_mode == "capture" or os.environ.get("SAVE_ROLLOUT_SNAPSHOTS", "0") == "1")
         snapshots.write(initial_formatted_obs, -1, TASK_ENV.take_action_cnt, TASK_ENV.eval_success)
         rollout_chunk = 0
         first_obs = None
         noise_exhausted = False
+        noise_fallback_chunks = 0
+        first_noise_fallback_chunk = None
         while TASK_ENV.take_action_cnt<TASK_ENV.step_lim:
             if first:
                 observation = diagnostic_call("first-chunk camera capture", TASK_ENV.get_obs)
@@ -760,6 +780,7 @@ def eval_policy(task_name,
             if noise_mode in ("replay", "control"):
                 inference_request["noise_replay_directory"] = noise_directory
                 inference_request["noise_source"] = "original" if noise_mode == "control" else "inverted"
+                inference_request["noise_continuation"] = os.environ.get("NOISE_INVERSION_CONTINUATION", "gaussian")
             ret = diagnostic_call("action-chunk inference", model.infer, inference_request)
             if ret.get('guidance_reference') is not None:
                 guidance_selections.append(ret['guidance_reference'])
@@ -770,6 +791,11 @@ def eval_policy(task_name,
             if ret.get("noise_exhausted"):
                 noise_exhausted = True
                 break
+            if ret.get("noise_fallback"):
+                noise_exhausted = True
+                noise_fallback_chunks += 1
+                if first_noise_fallback_chunk is None:
+                    first_noise_fallback_chunk = rollout_chunk
             action = ret['action']
             if 'video' in ret:
                 imagined_video = ret['video']
@@ -855,7 +881,11 @@ def eval_policy(task_name,
         record_episode(
             run_config, now_id, status="completed", success=bool(succ),
             noise_sequence_exhausted=noise_exhausted,
+            noise_continuation=os.environ.get("NOISE_INVERSION_CONTINUATION", "gaussian"),
+            noise_fallback_chunks=noise_fallback_chunks,
+            first_noise_fallback_chunk=first_noise_fallback_chunk,
             rollout_chunks=rollout_chunk,
+            simulator_action_limit=int(TASK_ENV.step_lim),
             simulator_action_count=int(TASK_ENV.take_action_cnt),
             policy_action_calls=len(full_action_history), observation_count=len(full_obs_list),
             video_path=str(out_img_file.resolve()), video_playback_fps=15,

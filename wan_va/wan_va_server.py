@@ -1546,6 +1546,7 @@ class VA_Server:
             if compute_kv_cache:
                 self._compute_icl_kv_cache(obs)
                 return dict()
+            noise_fallback = False
             if obs.get("noise_replay_directory"):
                 if self.use_icl or self.use_guidance or self.use_text:
                     raise ValueError("Noise replay requires language, ICL, and reward guidance disabled")
@@ -1555,17 +1556,22 @@ class VA_Server:
                     raise ValueError("noise_source must be inverted or original")
                 folder = "chunks" if noise_source == "original" else "inverted"
                 store = ChunkStore(Path(obs["noise_replay_directory"]) / folder)
+                continuation = obs.get("noise_continuation", "stop" if noise_source == "inverted" else "gaussian")
+                if continuation not in ("stop", "gaussian"):
+                    raise ValueError("noise_continuation must be stop or gaussian")
                 if self.chunk_idx >= store.count():
-                    if noise_source == "inverted":
+                    if continuation == "stop":
                         return dict(noise_exhausted=True)
-                    # Original-noise control may continue to the normal task limit.
-                    # _infer_icl still draws every chunk, even when overridden.
+                    # Ordinary draws are consumed on every chunk, including overridden
+                    # chunks, so both arms continue at the same seeded RNG position.
+                    noise_fallback = True
                 else:
                     saved = store.load(self.chunk_idx)
                     obs = dict(obs, video_noise=saved["video_noise"],
                                action_noise=saved["action_noise"])
             action = self._infer_icl(obs)
-            return dict(action=action, guidance_reference=getattr(self, "last_guidance_selection", None))
+            return dict(action=action, guidance_reference=getattr(self, "last_guidance_selection", None),
+                        noise_fallback=noise_fallback)
 
         if reset:
             logger.info(f"******************* Reset server ******************")

@@ -74,7 +74,11 @@ case "$TASK" in
     place_empty_cup|place_object_scale|stamp_seal|open_microwave|move_stapler_pad|place_bread_basket|stack_blocks_three) ;;
     *) echo "Not one of the seven unseen tasks: $TASK"; exit 1 ;;
 esac
-RUN_DIR="${EXPERIMENT_OUTPUT_ROOT:-$ZERO_WAM_ROOT/experiments/runs}/${TASK}_${SLURM_JOB_ID}"
+RUN_DIR="${NOISE_INVERSION_JOB_ROOT:-${EXPERIMENT_OUTPUT_ROOT:-$ZERO_WAM_ROOT/experiments/runs}/${TASK}_${SLURM_JOB_ID}}"
+if [[ -n "${NOISE_INVERSION_JOB_ROOT:-}" && -d "$RUN_DIR/diagnostics" ]]; then
+    mkdir -p "$RUN_DIR/attempts/job_${SLURM_JOB_ID}"
+    mv "$RUN_DIR/diagnostics" "$RUN_DIR/attempts/job_${SLURM_JOB_ID}/diagnostics"
+fi
 mkdir -p "$RUN_DIR/diagnostics"
 # ICL serving does not write latent dumps. Reuse the run root rather than
 # creating an empty generated/ directory.
@@ -187,7 +191,15 @@ done
 SERVER_READY=$(date +%s)
 CLIENT_STARTED=$(date +%s)
 if [[ "${NOISE_INVERSION_PILOT:-0}" == "1" ]]; then
-    if [[ -n "${NOISE_INVERSION_CONTROL_SOURCE:-}" ]]; then
+    if [[ -n "${NOISE_INVERSION_JOB_SETTINGS:-}" ]]; then
+        retry_args=()
+        if [[ "${NOISE_INVERSION_RETRY:-0}" == "1" ]]; then retry_args+=(--retry-incomplete); fi
+        timeout --kill-after=15s "${CLIENT_TIMEOUT}s" python experiments/scripts/noise_inversion_campaign.py run \
+            --directory "$RUN_DIR" --settings "$NOISE_INVERSION_JOB_SETTINGS" \
+            --digest "$NOISE_INVERSION_SOURCE_DIGEST" "${retry_args[@]}"
+        CLIENT_FINISHED=$(date +%s)
+        exit 0
+    elif [[ -n "${NOISE_INVERSION_CONTROL_SOURCE:-}" ]]; then
         pilot_args=(--control-source "$NOISE_INVERSION_CONTROL_SOURCE")
     else
         pilot_args=(--output "$RUN_DIR/noise_inversion" --sampling-seed "$SAMPLING_SEED" --simulator-seed "$SEED")

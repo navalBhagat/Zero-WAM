@@ -4,7 +4,8 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-from experiments.noise_inversion.pilot import TASKS, launch_client, run_pilot, run_controls
+from experiments.noise_inversion.config import TASKS, PILOT_TASKS
+from experiments.noise_inversion.pilot import launch_client, run_pilot, run_controls
 
 
 def main() -> None:
@@ -12,7 +13,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--control-source", type=Path, help="Existing noise_inversion directory; append controls only")
-    parser.add_argument("--tasks", nargs="+", choices=TASKS, default=list(TASKS))
+    parser.add_argument("--tasks", nargs="+", choices=TASKS, default=list(PILOT_TASKS))
     parser.add_argument("--sampling-seed", type=int, default=1234)
     parser.add_argument("--simulator-seed", type=int, default=0)
     parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", "29056")))
