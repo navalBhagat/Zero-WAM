@@ -32,11 +32,18 @@ def select_files(names, component, profile):
     if component == "checkpoint":
         return sorted(names)
     if profile == "eval":
-        required = set(evaluation_files())
+        references = set(evaluation_files())
+        required = {n for n in references if n.startswith("human_latents/")}
         missing = required - set(names)
         if missing:
             raise RuntimeError(f"Expected evaluation references missing from Hub: {sorted(missing)}")
-        return sorted(required | {n for n in names if fnmatchcase(n, "icl_configs/*")})
+        optional = references - required
+        unavailable = optional - set(names)
+        if unavailable:
+            print(f"Note: {len(unavailable)} reference MP4s unavailable; using required latents. "
+                  "Use GUIDANCE_REFERENCE_SOURCE=latent or reconstruct videos from latents.")
+        return sorted(required | (optional & set(names)) |
+                      {n for n in names if fnmatchcase(n, "icl_configs/*")})
     patterns = ("icl_configs/*", "robotwin_data/**",
                 "human_latents/robotwin/**", "human_data/robotwin/**")
     return sorted(n for n in names if any(fnmatchcase(n, p) for p in patterns))

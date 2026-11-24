@@ -62,6 +62,25 @@ commit `75ebeeaea0908c5527e7b1e305fbc7681382db47`. Python dependencies are in
 `setup/robotwin/requirements.lock.txt`. This is a package snapshot and build
 recipe, not a container image or a guarantee of compatibility with every driver.
 
+If Warp 1.6.0 fails to load with `GLIBC_2.29 not found` (for example on DAS6
+with GLIBC 2.28), build the same pinned version locally instead of replacing
+system GLIBC. In an allocated build session with Conda initialized:
+
+```bash
+# DAS6: load the toolkit matching RoboTwin, not Zero-WAM's CUDA 12.6 runtime.
+module load cuda12.1/toolkit/12.1
+conda install -n robotwin -c conda-forge git-lfs -y
+bash setup/robotwin/install.sh warp-source
+```
+
+This keeps an editable Warp checkout under `$ROBOTWIN_ROOT/third_party/warp`;
+retain it with the installation. The stage can take longer than 15 minutes and
+builds for multiple GPU architectures independently of `TORCH_CUDA_ARCH_LIST`.
+Rerunning `base` may replace the source installation with the pinned wheel;
+rerun `warp-source` afterward if necessary. A source build fixes the binary
+GLIBC mismatch, but does not establish driver compatibility: Warp CUDA API errors
+must still be investigated even if device detection/import checks pass.
+
 ## 3. Simulator assets
 
 Assets are separate from HumanGen. No GPU is needed for downloading them.
@@ -101,7 +120,7 @@ bash setup/zerowam/download.sh all --storage-root "$STORAGE_ROOT" \
 | Option | Purpose |
 | --- | --- |
 | `checkpoint`, `dataset`, or `all` | Select what to fetch |
-| `--profile eval` (default) | Seven fixed human videos, their VAE latents, and ICL manifests |
+| `--profile eval` (default) | Seven required human VAE latents, available reference MP4s, and ICL manifests |
 | `--profile robotwin` | Full simulation subset, including recorded robot videos/actions/latents |
 | `--workers 1` | Reduce request concurrency; default is 2 |
 | `--link` | Create repository paths expected by inference; refuse conflicting existing paths |
@@ -112,6 +131,20 @@ trajectories are optional. Rerun the same command to resume, preserving destinat
 Use a new storage root for a different revision. Run one downloader per root.
 On rate limiting, wait, verify authentication, and retry. The space estimate adds
 2 GiB headroom but cannot reserve quota or account for other concurrent writes.
+
+HumanGen may omit original human MP4s while providing their latents. The `eval`
+profile accepts this and reports missing optional videos; missing required latents
+still fail. Use `GUIDANCE_REFERENCE_SOURCE=latent` for guidance, or reconstruct
+MP4s from the latents separately. The downloader does not reconstruct videos.
+
+If the repository itself is on scratch, download directly into the expected paths
+without external-storage symlinks (add `--download --quota-free-gib REMAINING_GIB`
+after inspecting each plan):
+
+```bash
+bash setup/zerowam/download.sh checkpoint --storage-root "$PWD/checkpoints"
+bash setup/zerowam/download.sh dataset --storage-root "$PWD/data" --profile eval
+```
 
 For a **CPU-only Slurm job**, initialize required modules in your submission shell:
 
