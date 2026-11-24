@@ -171,7 +171,7 @@ run_camera_checks() {
         mkdir -p "$RUN_DIR/$camera_task"
         timeout --kill-after=15s 300s python setup/robotwin/check_camera.py \
             --task "$camera_task" --seed "$camera_seed" --frames 200 --timeout 280 \
-            --denoiser "${CAMERA_DENOISER:-oidn}" \
+            --denoiser "${CAMERA_DENOISER:-oidn}" --shader "${CAMERA_SHADER:-rt}" \
             --output "$RUN_DIR/$camera_task" > "$RUN_DIR/$camera_task/client.log" 2>&1 || failed=1
     done
     return "$failed"
@@ -181,6 +181,11 @@ if [[ "${CAMERA_STRESS_TEST:-0}" == "1" && "${CAMERA_LOAD_MODEL:-0}" == "0" ]]; 
     exit 0
 fi
 
+if [[ "${NOISE_INVERSION_CONTINUE:-0}" == "1" ]]; then
+    python experiments/scripts/noise_inversion_continue.py --check-only \
+        --campaign "$NOISE_INVERSION_REPAIR_SOURCE" --job-output "$RUN_DIR" \
+        --source-snapshot "$NOISE_INVERSION_CAPTURE_SNAPSHOT"
+fi
 SERVER_STARTED=$(date +%s)
 # Separate subprocess environments, sharing the same allocated GPU and node.
 (
@@ -211,6 +216,13 @@ SERVER_READY=$(date +%s)
 CLIENT_STARTED=$(date +%s)
 if [[ "${CAMERA_STRESS_TEST:-0}" == "1" ]]; then
     run_camera_checks
+    CLIENT_FINISHED=$(date +%s)
+    exit 0
+fi
+if [[ "${NOISE_INVERSION_CONTINUE:-0}" == "1" ]]; then
+    timeout --kill-after=15s "${CLIENT_TIMEOUT}s" python experiments/scripts/noise_inversion_continue.py \
+        --campaign "$NOISE_INVERSION_REPAIR_SOURCE" --job-output "$RUN_DIR" \
+        --source-snapshot "$NOISE_INVERSION_CAPTURE_SNAPSHOT"
     CLIENT_FINISHED=$(date +%s)
     exit 0
 fi

@@ -14,6 +14,7 @@ parser = argparse.ArgumentParser(description="Capture real RoboTwin task cameras
 parser.add_argument("--robotwin-root", type=Path, default=Path(os.environ.get("ROBOTWIN_ROOT", "~/Robotwin")).expanduser())
 parser.add_argument("--output", type=Path, default=Path("results/camera-check"))
 parser.add_argument("--task", choices=("move_stapler_pad", "place_object_scale", "place_empty_cup"), default="place_empty_cup")
+parser.add_argument("--shader", choices=("rt", "default"), default="rt")
 parser.add_argument("--denoiser", choices=("oidn", "none"), default="oidn")
 parser.add_argument("--seed", type=int, default=100000)
 parser.add_argument("--frames", type=int, default=3)
@@ -32,12 +33,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from evaluation.robotwin.rendering import configure_rendering
 configure_rendering()
 from sapien import render
-from evaluation.robotwin.camera_diagnostics import configure_diagnostic_denoiser
+from evaluation.robotwin.camera_diagnostics import configure_diagnostic_denoiser, configure_diagnostic_shader
 configure_diagnostic_denoiser(render, options.denoiser)
+configure_diagnostic_shader(render, options.shader)
 import json
 (output / "diagnostic_settings.json").write_text(json.dumps(dict(
     task=options.task, seed=options.seed, frames=options.frames,
-    denoiser=options.denoiser, samples_per_pixel=int(os.environ.get("RENDER_SAMPLES_PER_PIXEL", "32")),
+    shader=options.shader, denoiser=options.denoiser, samples_per_pixel=int(os.environ.get("RENDER_SAMPLES_PER_PIXEL", "32")),
     model_loaded=os.environ.get("CAMERA_LOAD_MODEL", "0") == "1",
 ), indent=2) + "\n")
 from envs import CONFIGS_PATH
@@ -73,6 +75,11 @@ print(f"Loading actual {options.task} scene, seed {options.seed}.", flush=True)
 print("CuRobo may initialize here; Zero-WAM is not loaded.")
 task.setup_demo(now_ep_num=0, seed=options.seed, is_test=True, **args)
 
+(output / "scene_info.json").write_text(json.dumps(dict(
+    info=getattr(task, "info", {}),
+    static_cameras=[dict(index=i, name=getattr(camera, "name", None))
+                    for i, camera in enumerate(task.cameras.static_camera_list)],
+), indent=2, default=str) + "\n")
 print("Task initialized. Capturing observations through task.get_obs().")
 # Do not retry setup failures: preserve the original traceback and stop.
 from evaluation.robotwin.camera_diagnostics import trace_cameras

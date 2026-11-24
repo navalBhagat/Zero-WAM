@@ -55,3 +55,13 @@ class DenoiserTests(unittest.TestCase):
         from evaluation.robotwin.camera_diagnostics import configure_diagnostic_denoiser
         with self.assertRaises(ValueError):
             configure_diagnostic_denoiser(SimpleNamespace(), "invalid")
+
+
+class ShaderTests(unittest.TestCase):
+    def test_scene_cannot_restore_ray_tracing_in_raster_test(self):
+        from evaluation.robotwin.camera_diagnostics import configure_diagnostic_shader
+        calls = []
+        render = SimpleNamespace(set_camera_shader_dir=calls.append)
+        configure_diagnostic_shader(render, "default")
+        render.set_camera_shader_dir("rt")
+        self.assertEqual(calls, ["default", "default"])

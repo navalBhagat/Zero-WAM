@@ -63,3 +63,16 @@ def configure_diagnostic_denoiser(render, denoiser):
 
     render.set_ray_tracing_denoiser = enforce
     enforce(denoiser)
+
+
+def configure_diagnostic_shader(render, shader):
+    """Override only the camera pipeline, before any task cameras are created."""
+    if shader not in ("rt", "default"):
+        raise ValueError("Diagnostic shader must be rt or default")
+    original = render.set_camera_shader_dir
+
+    def enforce(_scene_default):
+        return original(shader)
+
+    render.set_camera_shader_dir = enforce
+    enforce(shader)

@@ -373,3 +373,53 @@ at take_picture on A100/H100/V100 and discusses a pencil asset workaround:
 https://github.com/RoboTwin-Platform/RoboTwin/issues/83
 This is a lead, not evidence that our clean stapler scene contains that asset;
 do not remove assets or skip scenes without checking the actual scene first.
+
+### Rasterization comparison and stack continuation (24 November)
+
+The denoiser-off camera job 29648541 still failed for stapler, with Vulkan
+ErrorDeviceLost at image readback; scale passed 200 frames. Compare the same
+scenes with the camera pipeline changed from rt to default (rasterization):
+
+```bash
+sbatch --export=ALL,CAMERA_LOAD_MODEL=0,CAMERA_DENOISER=none,CAMERA_SHADER=default experiments/jobs/noise_inversion_camera.sbatch
+```
+
+This is simulator-only, maximum 15 minutes. Denoising stays off to match the last
+comparison; task, seed, resolution and sampling/depth configuration are retained.
+Ray samples/depth do not apply to the raster pipeline. Outputs include shader in
+the path: noise_inversion_full/camera_tests/shader_default_denoiser_none_model_0_job_JOBID/.
+Each task writes scene_info.json (including static camera names) and requested
+settings. This does not change the main campaign renderer or the external checkout.
+A pass implicates the ray-tracing path but is not a production fix; repeat and
+compare images before adopting a different observation distribution.
+
+The stack capture from OOM job 29648542 completed 1200 actions/38 chunks without
+OOM, with task success=false. To reuse it for the remaining paired phases:
+
+```bash
+sbatch experiments/jobs/noise_inversion_continue.sbatch
+```
+
+This requests one GPU for at most 90 minutes for control, inversion/reconstruction,
+and replay. It never calls capture and preserves capture/, chunks/, history/ and
+trial.json. All saved chunk/history files must be present; a pre-server check
+fails if the capture is incomplete or its archived runtime differs. Model,
+evaluation and noise-inversion runtime hashes must match the source snapshot;
+only camera_diagnostics.py is exempt because it is not imported by the capture
+or continuation path. Launcher and diagnostic script edits are tracked separately.
+The snapshot must match the saved capture's digest; original identity is retained.
+
+Baseline rendering stays rt/OIDN, 16 samples/depth 8. Serving remains FP32 video
+state, BF16 transformer, compact observation cache, VAE phase offload and expandable
+allocation. Source/control/replay settings are validated using episode metadata.
+Both control and replay disable language, ICL and reward guidance. The normal
+1200-action limit/full history remain; control/replay each have 30-minute phase
+deadlines, with 85 minutes total client time. Inversion may still fail or OOM:
+passing capture alone does not validate numerical inversion/replay.
+
+Trial outputs stay under trials/stack_blocks_three/scene_100000_noise_1234/;
+continuation.json records the new digest separately. Current source snapshot,
+server/GPU logs and final continuation_summary.json go under
+noise_inversion_full/continuation_jobs/job_JOBID/. Partial control/replay/inversion
+artifacts are archived on retry; completed compatible phases are reused. Source
+success=false remains a valid paired result, not evidence of successful ICL rescue.
