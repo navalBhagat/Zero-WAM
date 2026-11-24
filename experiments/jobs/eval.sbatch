@@ -171,6 +171,7 @@ run_camera_checks() {
         mkdir -p "$RUN_DIR/$camera_task"
         timeout --kill-after=15s 300s python setup/robotwin/check_camera.py \
             --task "$camera_task" --seed "$camera_seed" --frames 200 --timeout 280 \
+            --denoiser "${CAMERA_DENOISER:-oidn}" \
             --output "$RUN_DIR/$camera_task" > "$RUN_DIR/$camera_task/client.log" 2>&1 || failed=1
     done
     return "$failed"

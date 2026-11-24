@@ -317,7 +317,7 @@ sbatch --export=ALL,CAMERA_LOAD_MODEL=1 experiments/jobs/noise_inversion_camera.
 This stage also requests at most 15 minutes. It tests baseline model/renderer GPU
 coexistence; it does not build ICL/history caches or run inference. If stage 1
 fails, do not pay for stage 2 before inspecting the camera traceback. Outputs are
-under noise_inversion_full/camera_tests/model_STAGE_job_JOBID/TASK/, with shared
+under noise_inversion_full/camera_tests/denoiser_DENOISER_model_STAGE_job_JOBID/TASK/, with shared
 server/GPU logs in the job's diagnostics/. No paired trial results are overwritten.
 A denoiser-off comparison is deliberately not automatic: choose it after reviewing
 the unchanged-renderer results, and record it as a different rendering condition.
@@ -329,7 +329,7 @@ sbatch experiments/jobs/noise_inversion_oom.sbatch
 ```
 
 This is a single stack_blocks_three source capture (slot 100000, noise 1234),
-maximum 25 minutes, using expandable_segments allocation plus existing VAE
+maximum 35 minutes (30-minute source deadline), using expandable_segments allocation plus existing VAE
 transformer offload. It retains the normal 1200-action task limit and full KV
 history. It explicitly repairs the original incomplete trial, preserving the old
 attempt, and uses the same trial and repair_jobs paths as the repair pilot above.
@@ -339,3 +339,37 @@ memory safety. Compare cache_memory.jsonl, phase_separation.jsonl, GPU logs and
 any allocation traceback. Expandable allocation may reduce fragmentation; it does
 not bound live KV-cache growth. A repeat OOM requires another memory strategy
 before a full campaign. No control/inversion/replay is run by these diagnostics.
+
+
+### Findings and next comparison (23 November)
+
+Camera-only job 29633317: stapler slot 100002 stalled on static[1] during the
+second observation, without Zero-WAM. Scale seed 100006 passed all 200
+observations. These are fixed-scene tests; the scale pass does not rule out
+pose-dependent or intermittent failures in a rollout. Skip the model-loaded
+camera stage for now and isolate denoising:
+
+```bash
+sbatch --export=ALL,CAMERA_LOAD_MODEL=0,CAMERA_DENOISER=none experiments/jobs/noise_inversion_camera.sbatch
+```
+
+This changes only denoising (16 samples and the external depth-8 setup remain).
+The diagnostic intercepts RoboTwin's hardcoded denoiser setter before renderer
+creation so setup cannot reenable OIDN. No external checkout is edited.
+Requested settings are saved in each task's diagnostic_settings.json. If it
+passes, repeat before treating it as reliable; if it stalls, inspect camera
+labels and scene assets next. Do not adopt denoiser-free images for paired
+research results based on this diagnostic alone.
+
+OOM job 29633319 reached action 1072/chunk 33 without a recorded OOM, then the
+1200-second source timeout stopped it. That timeout was too short to establish
+full-horizon safety. The OOM launcher now allows a 1800-second source deadline
+inside a 35-minute allocation; it retains the normal 1200-action limit and full
+history. It still tests only capture, not inversion/replay, and archives the
+previous incomplete attempt before rerunning.
+
+Upstream context: RoboTwin issue 83 reports scene-dependent rendering slowdowns
+at take_picture on A100/H100/V100 and discusses a pencil asset workaround:
+https://github.com/RoboTwin-Platform/RoboTwin/issues/83
+This is a lead, not evidence that our clean stapler scene contains that asset;
+do not remove assets or skip scenes without checking the actual scene first.

@@ -10,7 +10,9 @@
 set -euo pipefail
 export ZERO_WAM_ROOT="${ZERO_WAM_ROOT:-$HOME/Zero-WAM}"
 export CAMERA_STRESS_TEST=1 CAMERA_LOAD_MODEL="${CAMERA_LOAD_MODEL:-0}"
-export NOISE_INVERSION_JOB_ROOT="$ZERO_WAM_ROOT/experiments/stages/noise_inversion_full/camera_tests/model_${CAMERA_LOAD_MODEL}_job_${SLURM_JOB_ID}"
+export CAMERA_DENOISER="${CAMERA_DENOISER:-oidn}"
+case "$CAMERA_DENOISER" in oidn|none) ;; *) echo "CAMERA_DENOISER must be oidn or none" >&2; exit 1 ;; esac
+export NOISE_INVERSION_JOB_ROOT="$ZERO_WAM_ROOT/experiments/stages/noise_inversion_full/camera_tests/denoiser_${CAMERA_DENOISER}_model_${CAMERA_LOAD_MODEL}_job_${SLURM_JOB_ID}"
 export TASK=move_stapler_pad RENDER_SAMPLES_PER_PIXEL=16
 export USE_ICL=1 USE_TEXT=1 USE_GUIDANCE=0
 export VIDEO_STATE_FP32=1 COMPACT_OBSERVATION_CACHE=1

@@ -14,6 +14,7 @@ parser = argparse.ArgumentParser(description="Capture real RoboTwin task cameras
 parser.add_argument("--robotwin-root", type=Path, default=Path(os.environ.get("ROBOTWIN_ROOT", "~/Robotwin")).expanduser())
 parser.add_argument("--output", type=Path, default=Path("results/camera-check"))
 parser.add_argument("--task", choices=("move_stapler_pad", "place_object_scale", "place_empty_cup"), default="place_empty_cup")
+parser.add_argument("--denoiser", choices=("oidn", "none"), default="oidn")
 parser.add_argument("--seed", type=int, default=100000)
 parser.add_argument("--frames", type=int, default=3)
 parser.add_argument("--timeout", type=int, default=480, help="Exit with a stack dump after this many seconds")
@@ -30,6 +31,15 @@ faulthandler.dump_traceback_later(options.timeout, exit=True)
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from evaluation.robotwin.rendering import configure_rendering
 configure_rendering()
+from sapien import render
+from evaluation.robotwin.camera_diagnostics import configure_diagnostic_denoiser
+configure_diagnostic_denoiser(render, options.denoiser)
+import json
+(output / "diagnostic_settings.json").write_text(json.dumps(dict(
+    task=options.task, seed=options.seed, frames=options.frames,
+    denoiser=options.denoiser, samples_per_pixel=int(os.environ.get("RENDER_SAMPLES_PER_PIXEL", "32")),
+    model_loaded=os.environ.get("CAMERA_LOAD_MODEL", "0") == "1",
+), indent=2) + "\n")
 from envs import CONFIGS_PATH
 configs = Path(CONFIGS_PATH)
 with open("task_config/demo_clean.yml") as f:
@@ -80,7 +90,7 @@ for frame in range(options.frames):
             raise RuntimeError(f"Unexpected RGB dtype for {name}: {rgb.dtype}")
         if frame in (0, options.frames - 1):
             Image.fromarray(rgb[..., :3]).save(output / f"{name}_{frame}.png")
-        print(f"Saved {name}_{frame}.png; shape={rgb.shape}")
+        print(f"Checked {name} frame={frame}; shape={rgb.shape}")
     task.scene.step()
 print(f"PASS: captured {options.frames} observations; see camera_timing.jsonl.", flush=True)
 trace_stream.close()

@@ -40,3 +40,18 @@ class CameraDiagnosticsTests(unittest.TestCase):
             cameras.update_picture()
         self.assertIs(cameras.static_camera_list[0], original)
         self.assertIn('"event": "error"', stream.getvalue())
+
+
+class DenoiserTests(unittest.TestCase):
+    def test_scene_setup_cannot_reenable_denoiser(self):
+        from evaluation.robotwin.camera_diagnostics import configure_diagnostic_denoiser
+        calls = []
+        render = SimpleNamespace(set_ray_tracing_denoiser=calls.append)
+        configure_diagnostic_denoiser(render, "none")
+        render.set_ray_tracing_denoiser("oidn")
+        self.assertEqual(calls, ["none", "none"])
+
+    def test_invalid_denoiser_is_rejected(self):
+        from evaluation.robotwin.camera_diagnostics import configure_diagnostic_denoiser
+        with self.assertRaises(ValueError):
+            configure_diagnostic_denoiser(SimpleNamespace(), "invalid")

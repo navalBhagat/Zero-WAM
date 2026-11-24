@@ -50,3 +50,16 @@ def trace_cameras(cameras, stream):
                 setattr(cameras, name, camera)
 
     cameras.update_picture = update_picture
+
+
+def configure_diagnostic_denoiser(render, denoiser):
+    """Keep RoboTwin setup from overriding this diagnostic's denoiser choice."""
+    if denoiser not in ("oidn", "none"):
+        raise ValueError("Diagnostic denoiser must be oidn or none")
+    original = render.set_ray_tracing_denoiser
+
+    def enforce(_scene_default):
+        return original(denoiser)
+
+    render.set_ray_tracing_denoiser = enforce
+    enforce(denoiser)
