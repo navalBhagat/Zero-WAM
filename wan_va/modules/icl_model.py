@@ -28,7 +28,7 @@ from torch.nn.attention.flex_attention import (
 )
 
 from .model import WanRotaryPosEmbed, WanTimeTextImageEmbedding
-from ..guidance.flops import compiled_attention, mask_construction, flop_component
+from ..diagnostics.flops import compiled_attention, mask_construction, flop_component
 
 
 ICL_CACHE_TYPE = 2
@@ -1308,7 +1308,7 @@ class WanICLTransformer3DModel(ModelMixin, ConfigMixin):
 
         text_emb = input_dict["text_emb"]
         text_hidden_states = self.condition_embedder.text_embedder(text_emb)
-        from wan_va.guidance.instrumentation import record_transformer_work
+        from wan_va.diagnostics.instrumentation import record_transformer_work
         record_transformer_work(self, mode, token_count, token_count+padded_length,
                                 key_type.numel(), text_hidden_states.shape[1])
 

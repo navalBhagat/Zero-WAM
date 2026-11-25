@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Usage: bash setup/robotwin/install.sh [install|base|source|assets|verify|gpu-check]
+# Usage: bash setup/robotwin/install.sh [install|base|source|warp-source|assets|verify|gpu-check]
 set -euo pipefail
 
 SETUP_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
@@ -15,10 +15,10 @@ CUROBO_REV=v0.7.8
 PYTORCH3D_REV=75ebeeaea0908c5527e7b1e305fbc7681382db47
 
 usage() {
-    echo "Usage: $0 [install|base|source|assets|verify|gpu-check]"
+    echo "Usage: $0 [install|base|source|warp-source|assets|verify|gpu-check]"
     echo "Set ROBOTWIN_ROOT, ROBOTWIN_ENV, and TORCH_CUDA_ARCH_LIST as needed."
 }
-case "$STAGE" in install|base|source|assets|verify|gpu-check) ;; *) usage; exit 2 ;; esac
+case "$STAGE" in install|base|source|warp-source|assets|verify|gpu-check) ;; *) usage; exit 2 ;; esac
 command -v conda >/dev/null || { echo "Initialize Conda first."; exit 1; }
 command -v git >/dev/null || { echo "git is required."; exit 1; }
 run_env() { conda run --no-capture-output -n "$ENV_NAME" "$@"; }
@@ -105,6 +105,27 @@ source_builds() {
     echo "Source builds and patches complete. Assets and GPU checks are separate stages."
 }
 
+warp_source() {
+    # Explicit repair for wheels requiring a newer host GLIBC; keep the pinned version.
+    command -v nvcc >/dev/null || { echo "Load the CUDA toolkit/compiler first."; exit 1; }
+    git lfs version >/dev/null || { echo "Install git-lfs first (e.g. conda install -c conda-forge git-lfs)."; exit 1; }
+    local warp_root="$ROBOTWIN_ROOT/third_party/warp"
+    local cuda_path
+    cuda_path=$(dirname "$(dirname "$(command -v nvcc)")")
+    mkdir -p "$ROBOTWIN_ROOT/third_party"
+    checkout https://github.com/NVIDIA/warp.git "$warp_root" v1.6.0
+    (
+        cd "$warp_root"
+        git lfs pull
+        run_env python build_lib.py --cuda_path="$cuda_path"
+        run_env python -m pip install --no-deps -e .
+    )
+    run_env python -m pip check
+    git -C "$warp_root" rev-parse HEAD > "$warp_root/zero-wam-build-revision.txt"
+    record
+    echo "Warp source build complete. Run gpu-check on an allocated GPU; driver API errors still require investigation."
+}
+
 verify() {
     run_env python -m pip check
     # Imports only; no CUDA execution or planner initialization here.
@@ -116,6 +137,7 @@ case "$STAGE" in
     install) base; source_builds; verify ;;
     base) base ;;
     source) source_builds ;;
+    warp-source) warp_source ;;
     verify) verify ;;
     assets)
         cd "$ROBOTWIN_ROOT"

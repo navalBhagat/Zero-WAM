@@ -15,16 +15,10 @@ conditioning = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(conditioning)
 
 
-def test_switches_are_independent_of_parameters_and_legacy_flags():
-    for icl, text, guidance in itertools.product((0, 1), repeat=3):
-        env = dict(USE_ICL=str(icl), USE_TEXT=str(text), USE_GUIDANCE=str(guidance),
-                   GUIDANCE_STRENGTH='0.1', TARGET_TEXT_CFG='5', EXTERNAL_STRENGTH='1')
-        with pytest.warns(FutureWarning, match='Ignoring legacy settings'):
-            config = conditioning.read_conditioning(env)
-        assert (config['use_icl'], config['use_text'], config['use_guidance']) == (icl, text, guidance)
-    defaults = conditioning.read_conditioning({'GUIDANCE_STRENGTH': '1'})
-    assert defaults['use_guidance'] is False
-    assert defaults['use_text'] is False
+def test_switches_are_independent_of_cfg_scales():
+    for icl, text in itertools.product((0, 1), repeat=2):
+        config = conditioning.read_conditioning(dict(USE_ICL=str(icl), USE_TEXT=str(text)))
+        assert (config['use_icl'], config['use_text']) == (icl, text)
     with pytest.raises(ValueError):
         conditioning.read_conditioning({'USE_TEXT': '-1'})
 
@@ -82,7 +76,7 @@ def test_reset_text_off_never_encodes_episode_instruction(use_text, monkeypatch)
         encoded.append(kwargs['prompt'])
         return prompt, empty
     mock = SimpleNamespace(
-        job_config=SimpleNamespace(use_text=use_text, use_guidance=False,
+        job_config=SimpleNamespace(use_text=use_text,
             action_per_frame=16, height=224, width=288, obs_cam_keys=['a','b','c'],
             action_dim=4, used_action_channel_ids=[0],
             norm_stat={'q01':[0]*4, 'q99':[1]*4}, action_norm_method='quantiles'),
@@ -97,7 +91,6 @@ def test_reset_text_off_never_encodes_episode_instruction(use_text, monkeypatch)
     monkeypatch.setattr(torch.cuda, 'memory_allocated', lambda *_: 0)
     monkeypatch.setattr(torch.cuda, 'memory_reserved', lambda *_: 0)
     scope['_reset_icl'](mock, 'private episode instruction', True, '', '', 1, 5,
-                        use_text=use_text, use_guidance=False)
+                        use_text=use_text)
     assert encoded == (['private episode instruction'] if use_text else [])
     torch.testing.assert_close(cached[0], prompt if use_text else empty)
-    assert mock.external_strength == 0
