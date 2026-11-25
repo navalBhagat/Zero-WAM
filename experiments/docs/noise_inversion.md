@@ -19,8 +19,11 @@ than retaining two large GPU caches. The streaming VAE feature cache is preserve
 across switches so encoding the next observation does not restart the video.
 Rebuilding full contexts costs time; profile before optimizing cache reuse.
 
-ICL, unconditioned control and oracle rollouts share scene slots and chunk-indexed
-Gaussian seeds, but each follows its own closed-loop history. Within every oracle
+ICL, unconditioned control and oracle rollouts share scene slots and an episode-seeded
+Gaussian stream. Each chunk advances that stream in the original sampler’s order:
+video noise, action noise, then the inactive-action masking draw. Cache rebuilds and
+extra oracle passes do not advance it. Original video/action noise is saved per
+chunk in `noise/original_noise/`. Each method follows its own closed-loop history. Within every oracle
 chunk, teacher/inversion/student use identical history. This differs from the old
 method, which replayed noises recovered from a separate source rollout.
 

@@ -16,9 +16,8 @@ def collect_context(server, request):
     session.initial_frame = torch.load(context["initial"], map_location="cpu", weights_only=True)["initial_frame"]
     session.history = [torch.load(item, map_location="cpu", weights_only=True)
                        for item in context["history"]]
-    # Index is part of the seed derivation in online sampling. Offset it here so
-    # request.seed is the explicit Gaussian seed regardless of history length.
-    session.settings["seed"] -= len(session.history)
+    # Each fixed-history pair starts its own stream from request.seed, regardless
+    # of the history's chunk index.
     session.sample({})
     record = json.loads((session.root / "chunks.jsonl").read_text().splitlines()[-1])
     record.update(context=str(path.resolve()), pair=str((session.root / "pairs" /

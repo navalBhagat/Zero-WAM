@@ -15,6 +15,7 @@ class OnlineSession:
         self.request = request
         self.settings = request["noise_session"]
         self.method = self.settings["method"]
+        self.generator = torch.Generator(device=server.device).manual_seed(int(self.settings["seed"]))
         if self.method not in ("icl", "control", "oracle", "learned"):
             raise ValueError(f"Unknown noise method: {self.method}")
         if not server.job_config.video_state_fp32:
@@ -61,15 +62,19 @@ class OnlineSession:
         if self.encoder_cache is not None:
             server.streaming_vae.feat_cache = self.encoder_cache
 
-    def noise(self, seed):
+    def noise(self):
+        """Advance the episode stream in the original sampler's draw order."""
         server = self.server
-        generator = torch.Generator(device=server.device).manual_seed(seed)
+        generator = self.generator
         video = torch.randn(1, 48, server.job_config.frame_chunk_size,
                             server.latent_height, server.latent_width,
                             device=server.device, dtype=server.dtype, generator=generator).float()
         action = torch.randn(1, server.job_config.action_dim, server.job_config.frame_chunk_size,
                              server.action_per_frame, 1, device=server.device,
                              dtype=server.dtype, generator=generator)
+        # The original sampler also draws a full action-shaped tensor before
+        # selecting inactive channels. Keep that consumption for the next chunk.
+        torch.randn(action.shape, device=server.device, dtype=server.dtype, generator=generator)
         return video, action
 
     def context(self):
@@ -100,8 +105,9 @@ class OnlineSession:
                 server, server._encode_initial_obs, observation, "initial_observation").detach().cpu()
             self.encoder_cache = server.streaming_vae.feat_cache
             torch.save(dict(initial_frame=self.initial_frame), self.root / "initial.pt")
-        seed = int(self.settings["seed"]) + index
-        original, action_noise = self.noise(seed)
+        seed = int(self.settings["seed"])
+        original, action_noise = self.noise()
+        ChunkStore(self.root / "original_noise").save(index, video=original, action=action_noise)
         error = None
         target = None
         recovered = original
@@ -135,6 +141,7 @@ class OnlineSession:
             raise RuntimeError("Policy produced nonfinite latents/actions")
         self.encoder_cache = server.streaming_vae.feat_cache
         record = dict(chunk=index, seed=seed, method=self.method, reconstruction_error=error,
+                      noise_schedule="episode_stream",
                       history_chunks=index, seconds=time.perf_counter() - started,
                       teacher_uses_text=self.method in ("icl", "oracle"),
                       teacher_caption_source="cached" if self.method in ("icl", "oracle") else None,

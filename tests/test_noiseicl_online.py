@@ -87,14 +87,21 @@ def test_online_reversal_uses_same_actual_history_without_demo_leakage(tmp_path,
     assert first["mask"][:, :, 1:].sum() > 0
 
 
-def test_explicit_chunk_seed_is_independent_of_global_rng(tmp_path, monkeypatch):
+def test_episode_noise_matches_original_draw_order(tmp_path, monkeypatch):
     monkeypatch.setitem(sys.modules, "wan_va.modules.icl_model", SimpleNamespace(OBSERVATION_CACHE_TYPE=0))
     session = OnlineSession(Server(), dict(prompt="", icl_video_path="", icl_latent_path="demo",
         noise_session=dict(method="control", directory=str(tmp_path), seed=1234)))
-    first = session.noise(1234)
-    torch.randn(1000)
-    second = session.noise(1234)
-    assert all(torch.equal(left, right) for left, right in zip(first, second))
+    expected = torch.Generator(device="cpu").manual_seed(1234)
+    for _ in range(3):
+        video = torch.randn(1, 48, 2, 4, 4, generator=expected)
+        action = torch.randn(1, 30, 2, 16, 1, generator=expected)
+        torch.randn(action.shape, generator=expected)
+        # Cache rebuilds and extra inference passes must not advance this stream.
+        torch.randn(1000)
+        session.build_context(False)
+        actual_video, actual_action = session.noise()
+        assert torch.equal(actual_video, video)
+        assert torch.equal(actual_action, action)
 
 
 def test_demo_cache_key_includes_video_path_when_latent_path_is_empty():
