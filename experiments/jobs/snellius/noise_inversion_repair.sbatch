@@ -29,4 +29,4 @@ export CLIENT_TIMEOUT="${CLIENT_TIMEOUT:-2400}"
 unset NOISE_INVERSION_JOB_SETTINGS
 export EXPERIMENT_SOURCE_DIGEST
 EXPERIMENT_SOURCE_DIGEST=$(cd "$ZERO_WAM_ROOT" && python3 -c 'from experiments.campaign.provenance import fingerprint; print(fingerprint()[0])')
-exec bash "$ZERO_WAM_ROOT/experiments/jobs/eval.sbatch"
+exec bash "$ZERO_WAM_ROOT/experiments/jobs/snellius/eval.sbatch"

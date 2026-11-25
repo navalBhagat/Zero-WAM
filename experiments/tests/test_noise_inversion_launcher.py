@@ -7,7 +7,7 @@ import tempfile
 import unittest
 
 
-LAUNCHER = Path(__file__).resolve().parents[1] / "jobs/noise_inversion.sbatch"
+LAUNCHER = Path(__file__).resolve().parents[1] / "jobs/snellius/noise_inversion.sbatch"
 
 
 class LauncherTests(unittest.TestCase):
@@ -15,7 +15,7 @@ class LauncherTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             checkout = root / "checkout with spaces"
-            jobs = checkout / "experiments/jobs"
+            jobs = checkout / "experiments/jobs/snellius"
             jobs.mkdir(parents=True)
             if valid_checkout:
                 (jobs / "eval.sbatch").write_text(

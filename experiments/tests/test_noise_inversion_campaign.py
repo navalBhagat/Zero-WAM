@@ -194,3 +194,29 @@ class CampaignTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Das6CampaignTests(unittest.TestCase):
+    def test_seven_task_pilot_uses_das6_launchers_and_no_snellius_charges(self):
+        import csv
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "das6"
+            with patch.object(campaign, "snapshot", side_effect=fake_snapshot):
+                manifest = campaign.plan(root, list(TASKS), [100000], [1234],
+                                         hours=1.5, estimated_minutes=60, cluster="das6")
+            self.assertEqual(len(manifest["runs"]), 7)
+            self.assertEqual(len(manifest["jobs"]), 7)
+            self.assertIsNone(manifest["sbu_per_hour"])
+            self.assertTrue(all(len(job["run_paths"]) == 1 for job in manifest["jobs"]))
+            with patch.object(campaign, "fingerprint", return_value=("digest", {})), \
+                 patch.object(campaign.subprocess, "check_output", side_effect=[str(i) for i in range(7)]) as sbatch:
+                campaign.submit(root, limit=7)
+            for call in sbatch.call_args_list:
+                command = call.args[0]
+                self.assertTrue(command[-1].endswith("jobs/das6/noise_inversion_campaign.sbatch"))
+                self.assertFalse(any("gpu_a100" in arg or arg.startswith("--dependency") for arg in command))
+                self.assertEqual(call.kwargs["env"]["SAMPLING_SEED"], "1234")
+            report(root, plots=False)
+            with (root / "costs.csv").open() as stream:
+                rows = list(csv.DictReader(stream))
+            self.assertTrue(all(row["cluster"] == "das6" and row["estimated_sbus"] == "" for row in rows))

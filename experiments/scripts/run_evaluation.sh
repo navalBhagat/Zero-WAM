@@ -1,13 +1,5 @@
-#!/bin/bash
-#SBATCH --partition=gpu_a100
-#SBATCH --job-name=zerowam_smoke
-#SBATCH --nodes=1
-#SBATCH --ntasks=1
-#SBATCH --gpus=1
-#SBATCH --cpus-per-task=18
-#SBATCH --time=01:00:00
-#SBATCH --output=zerowam_smoke_%j.out
-
+#!/usr/bin/env bash
+# Shared server/client lifecycle. Cluster resources belong in jobs/<cluster>/.
 set -eo pipefail
 JOB_STARTED=$(date +%s)
 SERVER_STARTED=0
@@ -15,11 +7,11 @@ SERVER_READY=0
 CLIENT_STARTED=0
 CLIENT_FINISHED=0
 
-module purge
-module load 2024
-module load Anaconda3/2024.06-1
-module load CUDA/12.6.0
-source "$(conda info --base)/etc/profile.d/conda.sh"
+# Cluster adapters define environment activation; the lifecycle stays shared.
+: "${EXPERIMENT_CLUSTER:?Set EXPERIMENT_CLUSTER to snellius or das6}"
+case "$EXPERIMENT_CLUSTER" in snellius|das6) ;; *) echo "Unknown cluster: $EXPERIMENT_CLUSTER" >&2; exit 1 ;; esac
+source "$ZERO_WAM_ROOT/experiments/scripts/clusters/$EXPERIMENT_CLUSTER.sh"
+activate_experiment_environment robotwin
 
 export ZERO_WAM_ROOT="${ZERO_WAM_ROOT:-$HOME/Zero-WAM}"
 if [[ -n "${EXPERIMENT_SOURCE_DIGEST:-}" ]]; then
@@ -150,7 +142,7 @@ case "$TASK" in
 esac
 
 # Fail early on client imports/render initialization, before loading the WAM.
-source activate robotwin
+activate_experiment_environment robotwin
 # Module Python can precede an inherited active Conda environment.
 export PATH="${CONDA_PREFIX:?Environment activation failed}/bin:$PATH"
 hash -r
@@ -189,7 +181,7 @@ fi
 SERVER_STARTED=$(date +%s)
 # Separate subprocess environments, sharing the same allocated GPU and node.
 (
-    source activate zerowam
+    activate_experiment_environment zerowam
     # Module Python can precede an inherited active Conda environment.
     export PATH="${CONDA_PREFIX:?Environment activation failed}/bin:$PATH"
     hash -r

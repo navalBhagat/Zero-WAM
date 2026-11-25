@@ -1,5 +1,12 @@
 # Zero-WAM experiments
 
+Slurm entry points are grouped by cluster: `jobs/snellius/` and `jobs/das6/`.
+The shared evaluation lifecycle is `scripts/run_evaluation.sh`; cluster-specific
+module/Conda activation lives in `scripts/clusters/`. See the DAS6 quick start in
+[noise inversion](docs/noise_inversion.md#das6-seven-task-pilot).
+Existing guidance code and its relocated Snellius launchers remain unchanged in
+behavior; its proposed cleanup is documented, not implemented.
+
 Tools for planning RoboTwin runs, replaying saved predictions, and explaining results.
 Run commands from the repository root. Historical results in `stages/` are preserved.
 
@@ -9,10 +16,10 @@ Run commands from the repository root. Historical results in `stages/` are prese
 | --- | --- | --- | --- |
 | Validate cache/memory behavior | `scripts/run_stage00.py` | A100 | Only with `--submit` |
 | Plan or launch a campaign | `scripts/robotwin_suite.py` | A100 | Only with `--submit` |
-| Diagnose whole-image DINO correspondence | `jobs/progress_matching.sbatch` | CPU (Rome) | Yes, through `sbatch` |
+| Diagnose whole-image DINO correspondence | `jobs/snellius/progress_matching.sbatch` | CPU (Rome) | Yes, through `sbatch` |
 | Compare temporal targets offline | `scripts/03_temporal_guidance_test.py` | CPU | No |
 | Replay strengths/decoder precision | `scripts/precision_replay.py` | GPU, VAE+DINO only | No |
-| Submit the small strength replay | `jobs/strength_replay.sbatch` | A100 | Yes, through `sbatch` |
+| Submit the small strength replay | `jobs/snellius/strength_replay.sbatch` | A100 | Yes, through `sbatch` |
 | Summarize a campaign | `analysis/analyze.py` | CPU | No |
 
 Paths in this table are relative to `experiments/`. Each entry point supports
@@ -34,7 +41,7 @@ python experiments/scripts/robotwin_suite.py guidance \
   --manifest experiments/stages/guidance_preview/manifest.json
 
 # Submit the saved-prediction strength test from the repository root.
-sbatch experiments/jobs/strength_replay.sbatch
+sbatch experiments/jobs/snellius/strength_replay.sbatch
 
 # Analyze an existing campaign without rerunning it.
 python experiments/analysis/analyze.py experiments/stages/03_guidance_pilot/manifest.json

@@ -113,7 +113,7 @@ def main():
             cmd += ["--account=" + options.account]
         if previous:
             cmd += ["--dependency=afterok:" + previous]
-        cmd += [str(ROOT / "experiments/jobs/eval.sbatch")]
+        cmd += [str(ROOT / "experiments/jobs/snellius/eval.sbatch")]
         spec["command"] = cmd
         print(spec["label"], f"sampling_seed={environment['SAMPLING_SEED']}", cmd)
         if options.submit:

@@ -3,7 +3,7 @@
 ## CPU temporal replay
 
 ```bash
-sbatch experiments/jobs/03_temporal_guidance_test.sbatch
+sbatch experiments/jobs/snellius/03_temporal_guidance_test.sbatch
 ```
 
 This reconstructs the full human reference on CPU, embeds it and saved robot previews
@@ -29,10 +29,10 @@ look like a late human frame to whole-image DINO.
 Submit the small FP32 strength sweep with:
 
 ```bash
-sbatch experiments/jobs/strength_replay.sbatch
+sbatch experiments/jobs/snellius/strength_replay.sbatch
 
 # Extend the sweep using arguments passed directly to the job script.
-sbatch experiments/jobs/strength_replay.sbatch 0 0.1 0.3 1.0
+sbatch experiments/jobs/snellius/strength_replay.sbatch 0 0.1 0.3 1.0
 ```
 
 Defaults are the saved scale prediction from job 29419404, strengths **0, 0.01,
@@ -48,7 +48,7 @@ python experiments/scripts/precision_replay.py \
   --output experiments/strength_replay/manual_check
 ```
 
-This Python command does not submit a job. `jobs/precision.sbatch` instead runs the
+This Python command does not submit a job. `jobs/snellius/precision.sbatch` instead runs the
 existing FP32/FP16 comparison with the replay CLI's default strengths/repetitions.
 
 Captured RGB is preferred so the target is identical; pass `--reference`/`--frames`
@@ -79,7 +79,7 @@ hide representation failures. Labels are for evaluation, not policy input.
 Submit from the repository root on Snellius:
 
 ```bash
-sbatch experiments/jobs/progress_matching.sbatch
+sbatch experiments/jobs/snellius/progress_matching.sbatch
 ```
 
 This submits a **CPU-only Rome job**, not a rollout. The default input is the
@@ -112,7 +112,7 @@ only and never supplied to the candidate tracker.
 
 ```bash
 # Replace the path with your completed, manually edited CSV.
-sbatch experiments/jobs/progress_matching.sbatch \
+sbatch experiments/jobs/snellius/progress_matching.sbatch \
   --labels experiments/progress_matching/labels.csv
 ```
 
@@ -144,7 +144,7 @@ agreement improves and failed-grasp observations remain in the correct stage.
 ## Successful same-seed ICL comparison
 
 ```bash
-sbatch experiments/jobs/progress_matching_icl.sbatch
+sbatch experiments/jobs/snellius/progress_matching_icl.sbatch
 ```
 
 This is a CPU-only Rome job, using successful baseline job **29286681**, simulator
@@ -169,7 +169,7 @@ reference labels, but label these six robot images independently; **do not reuse
 the failed trajectory's robot labels**. Then submit another fresh job:
 
 ```bash
-sbatch experiments/jobs/progress_matching_icl.sbatch \
+sbatch experiments/jobs/snellius/progress_matching_icl.sbatch \
   --labels experiments/progress_matching_icl/labels.csv
 ```
 
@@ -184,7 +184,7 @@ prior without later calibrating the transition model on both trajectories.
 ## Initial-frame-relative matching: reuse both label sets
 
 ```bash
-sbatch experiments/jobs/relative_matching.sbatch
+sbatch experiments/jobs/snellius/relative_matching.sbatch
 ```
 
 This submits one CPU-only Rome job, without policy inference, VAE reconstruction,
@@ -227,7 +227,7 @@ this experiment does not presume they encode semantic progress.
 ## Bread-basket diagnostic and annotations
 
 ```bash
-sbatch experiments/jobs/bread_matching.sbatch
+sbatch experiments/jobs/snellius/bread_matching.sbatch
 ```
 
 One CPU-only Rome job uses successful guidance pilot **29326933**, which has five
@@ -246,7 +246,7 @@ bread task, not the scale labels. Both robot and human labels must be newly
 inspected because this is a different task and demonstration.
 
 ```bash
-sbatch experiments/jobs/bread_matching.sbatch \
+sbatch experiments/jobs/snellius/bread_matching.sbatch \
   --labels experiments/stages/bread_matching/labels.csv
 ```
 

@@ -20,4 +20,4 @@ export USE_ICL=1 USE_TEXT=1 USE_GUIDANCE=0
 export VIDEO_STATE_FP32=1 COMPACT_OBSERVATION_CACHE=1
 export PHASE_SEPARATION=1 PHASE_OFFLOAD_TRANSFORMER=1
 export RUN_DIAGNOSTICS=1 SERVER_STARTUP_TIMEOUT=240
-exec bash "$ZERO_WAM_ROOT/experiments/jobs/eval.sbatch"
+exec bash "$ZERO_WAM_ROOT/experiments/jobs/snellius/eval.sbatch"

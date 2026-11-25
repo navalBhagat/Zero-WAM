@@ -14,6 +14,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     plan = commands.add_parser("plan", help="Dry-run planning only; writes manifest/source snapshot")
+    plan.add_argument("--cluster", choices=("snellius", "das6"), default="snellius")
     plan.add_argument("--directory", type=Path, required=True)
     plan.add_argument("--tasks", nargs="+", choices=TASKS, default=list(TASKS))
     plan.add_argument("--scene-seeds", nargs="+", type=int, default=list(range(100000, 100005)))
@@ -24,7 +25,7 @@ def main() -> None:
     plan.add_argument("--estimated-minutes", type=float, default=20)
     plan.add_argument("--max-scene-attempts", type=int, default=20,
                       help="Maximum feasibility checks per task/scene slot, shared across noises")
-    submit = commands.add_parser("submit", help="Explicitly submit a bounded sequential batch")
+    submit = commands.add_parser("submit", help="Explicitly submit independent jobs, bounded by --limit")
     submit.add_argument("--directory", type=Path, required=True)
     submit.add_argument("--account", help="Optional Slurm account override; otherwise use the login default")
     submit.add_argument("--limit", type=int, default=7)
@@ -43,11 +44,12 @@ def main() -> None:
     try:
         if args.command == "plan":
             data = campaign.plan(directory, args.tasks, args.scene_seeds, args.sampling_seeds,
-                                 args.render_samples, args.hours_per_job, args.sbu_per_hour, args.estimated_minutes, args.max_scene_attempts)
+                                 args.render_samples, args.hours_per_job, args.sbu_per_hour, args.estimated_minutes, args.max_scene_attempts, args.cluster)
             count = len(data["runs"])
             print(f"Planned {len(data['jobs'])} task/noise jobs: {count} paired trials / {3 * count} simulator rollouts. No jobs submitted.")
-            print(f"Estimate {count * args.estimated_minutes / 60 * args.sbu_per_hour:.0f} SBUs; "
-                  f"requested walltime ceiling {len(data['jobs']) * args.hours_per_job * args.sbu_per_hour:.0f} SBUs.")
+            print(f"Cluster: {args.cluster}; maximum {len(data['jobs']) * args.hours_per_job:g} GPU-hours.")
+            if data["sbu_per_hour"] is not None:
+                print(f"Estimated {count * args.estimated_minutes / 60 * data['sbu_per_hour']:.0f} SBUs.")
             report(directory, plots=False)
         elif args.command == "submit":
             jobs = campaign.submit(directory, args.account, args.limit, args.retry_incomplete)

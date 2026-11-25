@@ -18,11 +18,16 @@ from .scenes import SceneSearch
 
 def plan(directory: Path, tasks: list[str], scenes: list[int], noises: list[int],
          render_samples: int = 16, hours: float = 3.0, rate: float = 128.0,
-         estimated_minutes: float = 20.0, max_scene_attempts: int = 20) -> dict:
+         estimated_minutes: float = 20.0, max_scene_attempts: int = 20,
+         cluster: str = "snellius") -> dict:
     """Write a plan and source snapshot only; never submit implicitly."""
+    if cluster not in ("snellius", "das6"):
+        raise ValueError("Cluster must be snellius or das6")
+    if cluster == "das6":
+        rate = None  # Snellius SBU pricing does not apply to DAS6.
     if max_scene_attempts < 1:
         raise ValueError("Scene attempt limit must be positive")
-    if not tasks or not scenes or not noises or min(hours, rate, estimated_minutes) <= 0:
+    if not tasks or not scenes or not noises or min(hours, estimated_minutes) <= 0 or (rate is not None and rate <= 0):
         raise ValueError("Nonempty grids and positive timing/rate estimates required")
     if hours * 60 < estimated_minutes or not float(hours * 60).is_integer():
         raise ValueError("Walltime must be whole minutes and cover the runtime estimate")
@@ -40,7 +45,7 @@ def plan(directory: Path, tasks: list[str], scenes: list[int], noises: list[int]
                  run_paths=[run["path"] for run in runs if run["settings"]["task"] == task
                             and run["settings"]["sampling_seed"] == noise], submissions=[])
             for noise in noises for task in tasks]
-    manifest = dict(schema_version=3, source_digest=digest, runs=runs, jobs=jobs,
+    manifest = dict(schema_version=3, cluster=cluster, source_digest=digest, runs=runs, jobs=jobs,
                     scene_search=dict(reserved_seeds=scenes, max_attempts=max_scene_attempts),
                     hours_per_job=hours, sbu_per_hour=rate, estimated_minutes=estimated_minutes,
                     protocol="paired_gaussian_continuation_v1")
@@ -82,7 +87,11 @@ def submit(directory: Path, account: str | None = None, limit: int = 7,
                     continue
             pending.append(run)
         pending = pending[:limit]
-        ceiling = manifest["hours_per_job"] * manifest["sbu_per_hour"]
+        cluster = manifest.get("cluster", "snellius")
+        if cluster not in ("snellius", "das6"):
+            raise ValueError("Unknown campaign cluster")
+        rate = manifest["sbu_per_hour"]
+        ceiling = manifest["hours_per_job"] * rate if rate is not None else None
         identifiers = []
         minutes = round(manifest["hours_per_job"] * 60)
         for run in pending:
@@ -90,12 +99,12 @@ def submit(directory: Path, account: str | None = None, limit: int = 7,
             job_root.mkdir(parents=True, exist_ok=True)
             settings_file = job_root / "settings.json"
             save_json(settings_file, {key: run[key] for key in ("name", "task", "sampling_seed", "run_paths")})
-            command = ["sbatch", "--parsable", "--export=ALL", "--partition=gpu_a100",
+            command = ["sbatch", "--parsable", "--export=ALL",
                        f"--time={minutes}", f"--chdir={ROOT}",
                        f"--output={job_root}/slurm_%j.out", "--job-name=zw_noise_" + run["task"]]
             if account:
                 command.append(f"--account={account}")
-            command.append(str(ROOT / "experiments/jobs/noise_inversion_campaign.sbatch"))
+            command.append(str(ROOT / "experiments/jobs" / cluster / "noise_inversion_campaign.sbatch"))
             excluded = set(CONTROLLED) | {k for k in os.environ if k.startswith("NOISE_INVERSION_")}
             environment = {k: v for k, v in os.environ.items() if k not in excluded}
             environment.update(ZERO_WAM_ROOT=str(ROOT), NOISE_INVERSION_JOB_ROOT=str(job_root),
@@ -105,7 +114,7 @@ def submit(directory: Path, account: str | None = None, limit: int = 7,
                                EXPERIMENT_SOURCE_DIGEST=manifest["source_digest"],
                                NOISE_INVERSION_RETRY=str(int(retry)),
                                CLIENT_TIMEOUT=str(max(60, minutes * 60 - 120)),
-                               TASK=run["task"],
+                               TASK=run["task"], SAMPLING_SEED=str(run["sampling_seed"]),
                                EXPERIMENT_LABEL="noise_inversion_campaign")
             attempt = dict(account=account_key, requested_account=account, sbu_ceiling=ceiling, status="submitting", command=command)
             run["submissions"].append(attempt)

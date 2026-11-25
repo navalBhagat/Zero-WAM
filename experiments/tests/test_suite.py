@@ -154,7 +154,7 @@ def test_sacct_uses_gpu_count_once_and_keeps_missing_accounting():
 def test_consecutive_jobs_use_disjoint_server_and_rendezvous_ports():
     import subprocess
 
-    script = (ROOT / "experiments/jobs/eval.sbatch").read_text()
+    script = (ROOT / "experiments/scripts/run_evaluation.sh").read_text()
     assignments = "\n".join(
         line
         for line in script.splitlines()

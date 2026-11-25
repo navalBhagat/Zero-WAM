@@ -18,7 +18,8 @@
 | `analysis/compute.py` | Operator totals or coverage-labelled historical arithmetic estimates |
 | `analysis/report.py`, `plots.py` | Compact summary rows and shared plotting backend |
 | `io.py`, `paths.py` | Explicit serialization and repository-root utilities |
-| `jobs/` | Slurm resources/environment activation; Python logic lives in named helpers |
+| `jobs/snellius/`, `jobs/das6/` | Cluster Slurm resource requests and experiment presets |
+| `scripts/run_evaluation.sh`, `scripts/clusters/` | Shared lifecycle and cluster-specific module/Conda activation |
 
 Existing command paths and import APIs are retained through small wrappers. The
 budget calculator and timing wrapper delegate to shared implementations. Compact
@@ -48,7 +49,7 @@ Matplotlib:
 python -m pytest -q experiments/tests tests/test_policy_flops.py \
   tests/test_guidance_temporal.py tests/test_run_metadata.py \
   tests/test_phase_separation.py tests/test_conditioning.py
-bash -n experiments/jobs/eval.sbatch
+bash -n experiments/jobs/snellius/eval.sbatch
 ```
 
 When Ruff is available, use `ruff format --check experiments` and

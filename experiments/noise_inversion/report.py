@@ -98,6 +98,7 @@ def report(directory: Path, *, plots: bool = True) -> None:
     (directory / "results.md").write_text("\n".join(lines) + "\n")
     manifest = read_json(directory / "manifest.json")
     accounting = []
+    rate = manifest["sbu_per_hour"]
     units = manifest.get("jobs", manifest["runs"])
     for unit in units:
         grouped = "run_paths" in unit
@@ -110,8 +111,10 @@ def report(directory: Path, *, plots: bool = True) -> None:
         submissions = unit.get("submissions", [])
         accounting.append(dict(task=unit["task"] if grouped else unit["settings"]["task"], path=relative,
             accounts=";".join(sorted({a["account"] for a in submissions})), measured_seconds=seconds,
-            estimated_sbus=seconds / 3600 * manifest["sbu_per_hour"],
-            submitted_sbu_ceiling=sum(a["sbu_ceiling"] for a in submissions if a.get("status") != "submission_failed")))
+            cluster=manifest.get("cluster", "snellius"), measured_gpu_hours=seconds / 3600,
+            estimated_sbus=seconds / 3600 * rate if rate is not None else None,
+            submitted_sbu_ceiling=sum(a["sbu_ceiling"] for a in submissions
+                if a.get("status") != "submission_failed") if rate is not None else None))
     write_csv(directory / "costs.csv", accounting)
     attempts = []
     for task in dict.fromkeys(row["task"] for row in rows):

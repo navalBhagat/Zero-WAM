@@ -24,4 +24,4 @@ export CLIENT_TIMEOUT=5100 RUN_DIAGNOSTICS=1 PROFILE_TIMING=1 COUNT_POLICY_FLOPS
 unset CAMERA_STRESS_TEST CAMERA_SHADER CAMERA_DENOISER NOISE_INVERSION_REPAIR_PILOT NOISE_INVERSION_PILOT
 export EXPERIMENT_SOURCE_DIGEST
 EXPERIMENT_SOURCE_DIGEST=$(cd "$ZERO_WAM_ROOT" && python3 -c 'from experiments.campaign.provenance import fingerprint; print(fingerprint()[0])')
-exec bash "$ZERO_WAM_ROOT/experiments/jobs/eval.sbatch"
+exec bash "$ZERO_WAM_ROOT/experiments/jobs/snellius/eval.sbatch"

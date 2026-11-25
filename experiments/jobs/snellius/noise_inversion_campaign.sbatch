@@ -26,4 +26,4 @@ export CLIENT_TIMEOUT="${CLIENT_TIMEOUT:-10500}"
 : "${TASK:?Missing task in submission environment}"
 export TASK
 export MODEL_PATH="${MODEL_PATH:-$ZERO_WAM_ROOT/checkpoints/zero-wam-posttrain-robotwin}"
-exec bash "$ZERO_WAM_ROOT/experiments/jobs/eval.sbatch"
+exec bash "$ZERO_WAM_ROOT/experiments/jobs/snellius/eval.sbatch"

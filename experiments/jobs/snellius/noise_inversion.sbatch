@@ -22,7 +22,7 @@ export CLIENT_TIMEOUT="${CLIENT_TIMEOUT:-9000}"
 # Launch the existing environment/server lifecycle; the pilot runs both tasks.
 # Slurm runs a spool copy, so BASH_SOURCE does not point into the checkout.
 export ZERO_WAM_ROOT="${ZERO_WAM_ROOT:-${SLURM_SUBMIT_DIR:-$PWD}}"
-EVAL_JOB="$ZERO_WAM_ROOT/experiments/jobs/eval.sbatch"
+EVAL_JOB="$ZERO_WAM_ROOT/experiments/jobs/snellius/eval.sbatch"
 if [[ ! -f "$EVAL_JOB" ]]; then
     echo "Cannot find $EVAL_JOB. Submit from the repository root or set ZERO_WAM_ROOT to the checkout." >&2
     exit 1

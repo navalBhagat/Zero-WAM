@@ -1,5 +1,81 @@
 # Paired noise-inversion campaign
 
+## DAS6 seven-task pilot
+
+Cluster organization is now `experiments/jobs/snellius/` for the existing launchers
+and `experiments/jobs/das6/` for the new DAS6 launchers. Server startup/health checks,
+client execution, cleanup, GPU monitoring and timing share
+`experiments/scripts/run_evaluation.sh`. The cluster adapters in
+`scripts/clusters/` only initialize modules/Conda. The portable CPU download
+template stays under `setup/zerowam/`; it is not a Snellius evaluation job.
+
+The DAS6 adapter sources `$HOME/nbhagat-workspace-env.sh`; it never hardcodes a
+username or substitutes a different workspace. Robotwin uses
+`cuda12.1/toolkit/12.1` and the model subprocess uses `cuda12.6/toolkit/12.6`.
+Both run in their existing named Conda environments. Optional module overrides
+are `DAS6_ROBOTWIN_CUDA_MODULE` and `DAS6_ZEROWAM_CUDA_MODULE`.
+
+Run these commands **on DAS6 after syncing the final code**, from its checkout:
+
+```bash
+source "$HOME/nbhagat-workspace-env.sh"
+module load prun
+conda activate robotwin
+cd "$ZERO_WAM_ROOT"
+
+python experiments/scripts/noise_inversion_campaign.py plan \
+  --cluster das6 \
+  --directory experiments/stages/noise_inversion_das6_pilot \
+  --scene-seeds 100000 --sampling-seeds 1234 \
+  --render-samples 16 --hours-per-job 1.5 --estimated-minutes 60
+
+# First calibrate one task; the default first task is bread basket.
+python experiments/scripts/noise_inversion_campaign.py submit \
+  --directory experiments/stages/noise_inversion_das6_pilot --limit 1
+
+# After checking it, submit the six remaining independent jobs.
+python experiments/scripts/noise_inversion_campaign.py submit \
+  --directory experiments/stages/noise_inversion_das6_pilot --limit 6
+
+python experiments/scripts/noise_inversion_campaign.py report \
+  --directory experiments/stages/noise_inversion_das6_pilot
+```
+
+To submit all seven immediately, use `--limit 7` instead of the two submit calls.
+There are no dependencies. Each job requests `defq`, one `gpu:A6000`, four CPUs,
+and a 90-minute ceiling. The complete pilot is seven paired trials / 21 simulator
+rollouts, plus inversion/reconstruction, not 21 Slurm jobs. A feasible setup is
+required, but teacher failure still proceeds to inversion and replay. Scene
+replacement attempts are recorded and bounded, as before.
+
+DAS6's general job policy limits working-hours jobs to 15 minutes; longer jobs
+are for nights/weekends unless site permission applies. This pilot's full paired
+trials do not fit the 15-minute template. Arrange the launch window accordingly;
+no automatic scheduling, permission request or submission is performed here.
+Source: https://www.cs.vu.nl/das/jobs.shtml
+
+The model profile explicitly retains FP32 video state, BF16 transformer, compact
+observation caching, phase separation/transformer offload, expandable allocation,
+ray tracing with OIDN and depth 8, and 16 samples per pixel. No rasterization or
+reward guidance is enabled. Native ICL cached-caption behavior is unchanged:
+USE_TEXT=1 in capture preserves that context, while target text remains empty;
+control/inversion/replay disable text and ICL. Do not reinterpret the flag alone
+as a new instruction-conditioned experiment.
+
+Per-trial files:
+`noise_inversion_das6_pilot/trials/TASK/scene_100000_noise_1234/`.
+Job/server/GPU logs:
+`noise_inversion_das6_pilot/jobs/TASK_noise_1234/`, including `slurm_JOBID.out`.
+Reports are generated explicitly with the report command. Completed trials are
+skipped; retries use `submit --retry-incomplete`. Source changes require a fresh
+plan; do not point this new runtime at the historical Snellius campaign manifest.
+SBU fields are left blank for DAS6; wall time and GPU-hours are recorded.
+
+The adapter is locally tested with stubbed modules/Slurm, not executed on DAS6.
+Successful cup inference is a useful prerequisite, but does not establish that
+all seven tasks, native rendering, inversion, or long cache growth are stable.
+
+
 Run three conditions on the same task, scene, original Gaussian video noise and
 original action noise: **ICL**, **no ICL/language**, and **no ICL/language with
 recovered video noise**. Robot observations and action history remain enabled.
@@ -241,7 +317,7 @@ or relaxation was needed for the grouped campaign.
 Stop the old stalled jobs first and sync the updated code. From the checkout:
 
 ```bash
-sbatch experiments/jobs/noise_inversion_repair.sbatch
+sbatch experiments/jobs/snellius/noise_inversion_repair.sbatch
 ```
 
 This requests **one GPU for at most 45 minutes** and runs only three source
@@ -296,7 +372,7 @@ claiming that the original registry inconsistency's underlying cause was proved.
 Keep 16 samples/pixel, path depth 8 and OIDN fixed initially. Submit stage 1:
 
 ```bash
-sbatch experiments/jobs/noise_inversion_camera.sbatch
+sbatch experiments/jobs/snellius/noise_inversion_camera.sbatch
 ```
 
 This requests one GPU for at most 15 minutes, with no model server. It captures
@@ -311,7 +387,7 @@ Passing does not rule out a pose-dependent failure.
 Only after inspecting stage 1, submit the same captures with model weights loaded:
 
 ```bash
-sbatch --export=ALL,CAMERA_LOAD_MODEL=1 experiments/jobs/noise_inversion_camera.sbatch
+sbatch --export=ALL,CAMERA_LOAD_MODEL=1 experiments/jobs/snellius/noise_inversion_camera.sbatch
 ```
 
 This stage also requests at most 15 minutes. It tests baseline model/renderer GPU
@@ -325,7 +401,7 @@ the unchanged-renderer results, and record it as a different rendering condition
 Test long-history OOM separately:
 
 ```bash
-sbatch experiments/jobs/noise_inversion_oom.sbatch
+sbatch experiments/jobs/snellius/noise_inversion_oom.sbatch
 ```
 
 This is a single stack_blocks_three source capture (slot 100000, noise 1234),
@@ -350,7 +426,7 @@ pose-dependent or intermittent failures in a rollout. Skip the model-loaded
 camera stage for now and isolate denoising:
 
 ```bash
-sbatch --export=ALL,CAMERA_LOAD_MODEL=0,CAMERA_DENOISER=none experiments/jobs/noise_inversion_camera.sbatch
+sbatch --export=ALL,CAMERA_LOAD_MODEL=0,CAMERA_DENOISER=none experiments/jobs/snellius/noise_inversion_camera.sbatch
 ```
 
 This changes only denoising (16 samples and the external depth-8 setup remain).
@@ -381,7 +457,7 @@ ErrorDeviceLost at image readback; scale passed 200 frames. Compare the same
 scenes with the camera pipeline changed from rt to default (rasterization):
 
 ```bash
-sbatch --export=ALL,CAMERA_LOAD_MODEL=0,CAMERA_DENOISER=none,CAMERA_SHADER=default experiments/jobs/noise_inversion_camera.sbatch
+sbatch --export=ALL,CAMERA_LOAD_MODEL=0,CAMERA_DENOISER=none,CAMERA_SHADER=default experiments/jobs/snellius/noise_inversion_camera.sbatch
 ```
 
 This is simulator-only, maximum 15 minutes. Denoising stays off to match the last
@@ -397,7 +473,7 @@ The stack capture from OOM job 29648542 completed 1200 actions/38 chunks without
 OOM, with task success=false. To reuse it for the remaining paired phases:
 
 ```bash
-sbatch experiments/jobs/noise_inversion_continue.sbatch
+sbatch experiments/jobs/snellius/noise_inversion_continue.sbatch
 ```
 
 This requests one GPU for at most 90 minutes for control, inversion/reconstruction,
@@ -423,3 +499,143 @@ server/GPU logs and final continuation_summary.json go under
 noise_inversion_full/continuation_jobs/job_JOBID/. Partial control/replay/inversion
 artifacts are archived on retry; completed compatible phases are reused. Source
 success=false remains a valid paired result, not evidence of successful ICL rescue.
+
+## Proposed research and cleanup plan (not implemented)
+
+This section interprets the supplied NoiseICL_research_plan.pdf (pp. 1–3).
+No collector, adapter, new inversion method or guidance removal is implemented
+as part of the cluster reorganization. The seven-task DAS6 pilot executes the
+existing capture/control/invert/replay pipeline.
+
+### Current implementation versus the proposal
+
+| Question | Current implementation | Proposal | Consequence |
+| --- | --- | --- | --- |
+| When is the teacher queried? | A complete ICL source episode is captured first. | Teacher is queried at each chunk using the current rollout history. | Current approach is simpler, resumable and amortizes a saved source; online teacher is costlier but supplies an oracle at the actual visited state. |
+| Which history is inverted? | The saved source history is rebuilt without ICL for each source chunk. | Teacher generation, inversion and reconstruction share the current chunk's fixed history. | Our numerical reconstruction is matched to source history, but the closed-loop replay history can diverge. |
+| How is noise reused? | Recovered noise for source chunk i initializes replay chunk i. | Fresh teacher/inversion target is produced for each current chunk. | Failure of saved-noise replay can reflect a history mismatch, not necessarily bad inversion. |
+| What is already measured? | Three closed-loop success outcomes, reconstruction errors, Gaussian fallback and incomplete phases. | Same outcomes plus an online matched-history oracle and training pairs from recorded seen-task trajectories. | Keep existing results as saved-noise transfer; do not relabel them as the proposed online oracle. |
+| Are failed teachers used? | Inversion/replay run even when source success=false. | Data are generated across stages, not only successful episodes. | Keep failures, with explicit outcomes and numerical-quality flags; do not filter by success to inflate evaluation. |
+| Is the teacher literally text-free? | Target text is empty; native ICL may retain cached caption embeddings. | The document describes the ICL teacher as no-language, with optional prompt input to the adapter. | Audit/report actual context. Preserve native behavior for comparability now; test a caption-free variant separately later. |
+
+Recommendation: keep the current implementation through the seven-task pilot
+and initial multi-seed evaluation. It directly asks whether a saved successful
+behavior can be transferred via initial noise. Add the proposal's matched-history
+collector before training: it supplies a well-defined target for the observation
+that the deployed adapter will actually receive. An online oracle is an upper-bound
+experiment requiring a teacher at deployment, not the final learned policy.
+Neither method is universally better: saved-noise replay tests transfer under
+closed-loop divergence; online reversal removes that confound at higher cost.
+
+### Gates, data volumes and evaluation
+
+1. Technical gate: one scene/noise pair on each of the seven unseen tasks (seven
+   pairs, 21 rollouts). Verify conditioning/cache isolation, complete tensor/history
+   sequences, finite inversion/reconstruction, task success criteria, output paths,
+   renderer stability, peak memory, wall time and fallback accounting. This is a
+   smoke test, not a meaningful success-rate estimate. Inspect videos for task
+   progress and keep policy failure distinct from runtime failure/infeasibility.
+2. Signal gate: 20 distinct feasible scenes per unseen task with one noise seed
+   initially: 140 pairs / 420 rollouts. Expand to 30 scenes (210 pairs / 630
+   rollouts) if useful and affordable. A second noise on five scenes per task adds
+   35 pairs for seed sensitivity; those are not 35 new independent scenes.
+   Estimate cost from the DAS6 pilot's per-task times/storage, not Snellius SBUs.
+   Do not collect 100/task until this gate establishes a useful signal and stable
+   failure handling. Keep all seven tasks excluded from adapter optimization.
+3. Dataset audit: confirm access to the released seen-task human/robot pair IDs,
+   frame/action trajectories, camera layout, VAE latents and normalization. Do not
+   assume human videos alone contain usable robot action histories. Select five
+   representative seen tasks covering arm choice, task length and manipulation
+   types; choose them without tuning on the seven unseen test tasks.
+4. Collector pilot: five seen tasks × 20 paired trajectories × 10 sampled history
+   points × two Gaussian seeds = 2000 target pairs, if enough valid points exist.
+   Sample across progress uniformly; shorter trajectories contribute fewer points
+   rather than duplicate pseudo-independent data. Lock scene/trajectory groups
+   before generating seeds. Use 14/3/3 trajectories per task for train/val/test:
+   planned 1400/300/300 pairs. Keep shared human-demo and scene duplicates from
+   leaking across splits. Keep the test partition untouched during training.
+5. Scale only after learnability: 43 seen tasks × 20 trajectories × 10 points × two
+   seeds = 17,200 pairs, nominally 12,040/2580/2580 under the same group split.
+   Counts are targets, not promises: report invalid inversions, short trajectories
+   and missing data. A planning estimate is N_pairs × measured seconds/pair plus
+   evaluation/reset overhead, and N_pairs × measured bytes/pair plus shared
+   contexts. Benchmark 100 pairs first before scheduling the full 2000.
+
+Every evaluation table should show ICL, no-ICL/no-language control, saved-noise
+replay, and later online oracle/learned adapter as separate columns. Report per-task
+counts, macro average, paired gain, rescue conditional on control failure,
+regression conditional on control success, source-success/source-failure strata,
+fallback-free outcomes, failures/incompletes, and time/memory. Use scene-level
+paired bootstrap intervals after enough scenes exist; chunk/seed observations
+from one scene are correlated. Fix settings and success checks across conditions.
+Do not silently replace a renderer in one condition. If RTX ray tracing fails,
+complete rendering diagnostics before scaling.
+
+### Collector and target schema to implement later
+
+For a fixed robot history o and demo h, sample epsilon, query the frozen ICL
+teacher for y, rebuild unconditioned robot-only context, invert y to epsilon_star,
+and reconstruct y_hat under that same history. Save Delta=epsilon_star-epsilon.
+Teacher and unconditioned KV/VAE states must be isolated; human-prefix tokens must
+not leak into inversion or replay. Replay original prior actions when rebuilding
+history. Repeat two seeds at each same history to learn the seed-dependent map.
+
+Shared context records: task and split, scene/trajectory/demo IDs, actual seed,
+human latent/reference path plus hash, robot history latents, prior normalized
+actions, initial observation, camera geometry/order and masks. Do not repeat large
+demo/history arrays for every seed if a stable context ID can reference them.
+
+Pair records: context ID, chunk/progress index, Gaussian seed, original video and
+action noise, recovered video noise/residual, teacher future video latent,
+reconstruction relative L2, solver grid/steps/dtypes, actual conditioning sources,
+source outcome, fallback/runtime/finite flags and checkpoint/code fingerprints.
+Mask observed/clamped frames and padding in the regression loss: their recovered
+values are constrained rather than unconstrained noise targets. Reject invalid
+numerical targets and fallback noise, not every unsuccessful teacher episode.
+Choose any reconstruction-quality filtering on seen-task validation data only;
+compare with the unconditioned numerical round-trip control so solver error is not
+mistaken for ICL information.
+
+### Residual adapter experiment to implement later
+
+Start from epsilon_pred=epsilon+f(epsilon,h,o), with a zero-initialized output head
+and supervised masked residual MSE, without backbone gradients. Include original
+Gaussian noise, frozen-VAE demo tokens, current robot/history latents and prior
+actions. Use spatiotemporal token positions and modality IDs; include chunk/progress
+as an optional feature/ablation. This network is called once at initialization
+per chunk, so it does not inherently need the diffusion solver timestep as input.
+Prompt embeddings and task IDs are optional ablations, not required default
+inputs for a task-agnostic adapter. Cached teacher captions must still be logged.
+
+First overfit about 100 training pairs. Compare a small residual MLP/coarse
+convolutional baseline with the proposed patch transformer (eight blocks, width
+512, eight heads, cross-attention to context). The transformer is attractive for
+spatiotemporal structure and variable demo/history context, not required by the
+fact that the target is noise. Start AdamW at 1e-4, BF16, effective batch 64, up to
+5000 steps; choose capacity/stopping from grouped validation. Measure residual MSE
+against the zero-residual baseline and reconstruction error, then evaluate
+closed-loop success on held-out seen scenes and the seven unseen tasks. Add
+shuffled-demo and history/seed ablations. No teacher/inversion runs at learned
+inference; action generation remains unchanged. Frequency decomposition, RL and
+backbone fine-tuning are later questions, not prerequisites.
+
+### Guidance cleanup proposal to review before edits
+
+1. Establish golden seeded inputs/outputs and conditioning metadata on one GPU,
+   covering native ICL, empty-text/no-ICL sampling, inversion and replay. Preserve
+   the current campaign/source snapshots and results; do not modify historical
+   outputs or compare exact floating-point equality across different GPU stacks.
+2. Move reusable FLOP/workload/reset timing from wan_va/guidance into a neutral
+   diagnostics package. Preserve cache/GPU logging, inference timing, watchdogs,
+   package/hardware/code metadata and the phase-separation diagnostics. Audit
+   shared latent/reference utilities before deleting any guidance module.
+3. Remove only external reward guidance: DINO reward/gradient steps, temporal
+   reward matching/selectors, reward captures, DINO checkpoint/config options and
+   guidance-only launch paths/tests/docs after confirming no remaining imports.
+   This removal is not part of the current cluster changes.
+4. Retain ICL classifier-free guidance and its scale, target/ICL caption selection,
+   text-conditioning switches, empty embeddings and robot history caches. These
+   belong to native model conditioning even though their names include guidance.
+5. Rerun numerical/conditioning tests and one full paired episode; compare with
+   the golden cases before collecting targets. Version the dataset by the final
+   scientific runtime fingerprint and keep legacy result readers/metadata intact.

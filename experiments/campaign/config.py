@@ -148,7 +148,7 @@ def parser() -> argparse.ArgumentParser:
     slurm_options.add_argument("--client-timeout", type=int, default=None)
     slurm_options.add_argument("--account")
     slurm_options.add_argument(
-        "--job-script", type=Path, default=ROOT / "experiments/jobs/eval.sbatch"
+        "--job-script", type=Path, default=ROOT / "experiments/jobs/snellius/eval.sbatch"
     )
     recording_options.add_argument("--manifest", type=Path, required=True)
     slurm_options.add_argument("--minutes-per-episode", type=float, default=10)

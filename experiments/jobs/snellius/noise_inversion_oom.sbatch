@@ -13,4 +13,4 @@ export NOISE_INVERSION_REPAIR_TASKS=stack_blocks_three
 export NOISE_INVERSION_PHASE_TIMEOUT=1800 CLIENT_TIMEOUT=1900
 # Allocation experiment: retains the full history and normal action limit.
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
-exec bash "$ZERO_WAM_ROOT/experiments/jobs/noise_inversion_repair.sbatch"
+exec bash "$ZERO_WAM_ROOT/experiments/jobs/snellius/noise_inversion_repair.sbatch"

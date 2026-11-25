@@ -30,7 +30,7 @@ export TASK=place_bread_basket
 export SAMPLING_SEED=1234
 export RENDER_SAMPLES_PER_PIXEL=16
 export CLIENT_TIMEOUT=3000
-EVAL_JOB="$ZERO_WAM_ROOT/experiments/jobs/eval.sbatch"
+EVAL_JOB="$ZERO_WAM_ROOT/experiments/jobs/snellius/eval.sbatch"
 if [[ ! -f "$EVAL_JOB" ]]; then
     echo "Submit from the repository root or set ZERO_WAM_ROOT." >&2
     exit 1
