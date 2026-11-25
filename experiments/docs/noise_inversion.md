@@ -2,9 +2,11 @@
 
 For the current robot history o, human demo h and Gaussian video noise z:
 
-1. Rebuild ICL context: demo KV plus the actual robot observations/prior actions.
-2. Generate the teacher video latent y with z. The teacher uses no language.
-3. Clear that context and rebuild the same robot history without the human demo.
+1. Rebuild ICL context: demo KV with its cached caption, plus the actual robot observations/prior actions.
+2. Generate the teacher video latent y with z. The caption conditions the human
+   context; the target task-instruction embedding stays empty.
+3. Clear that context and rebuild the same robot history without the human demo
+   or its caption. Inversion and student sampling use empty text embeddings.
 4. Integrate the unconditioned flow backward from y to recovered noise z*.
 5. Forward-integrate z* to measure relative L2 reconstruction error.
 6. Generate video/actions without ICL or text, starting from z* and the original
@@ -49,3 +51,8 @@ unseen tasks for closed-loop evaluation. Per-task success uses complete matched
 trials as the denominator; report incompletes, rescues, regressions, paired
 scene-level intervals, reconstruction quality, GPU time and peak/cache logs.
 The smoke campaign is a technical check, not a success-rate estimate.
+
+Caption-restored ICL requires `text_emb` in the cached human latent file. Missing
+captions raise an error rather than silently falling back to caption-free ICL.
+This applies to both the ICL baseline and oracle/collection teacher. The learned
+adapter continues to receive visual demo/history latents rather than captions.

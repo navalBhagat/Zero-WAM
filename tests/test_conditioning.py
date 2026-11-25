@@ -59,7 +59,8 @@ def test_unsupported_double_cfg_is_rejected_instead_of_silently_ignored():
 
 
 @pytest.mark.parametrize('use_text', [False, True])
-def test_reset_text_off_never_encodes_episode_instruction(use_text, monkeypatch):
+@pytest.mark.parametrize('target_text_source', ['instruction', 'empty'])
+def test_reset_only_encodes_requested_target_instruction(use_text, target_text_source, monkeypatch):
     import sys
     import types
     package = types.ModuleType('_policy_test')
@@ -90,7 +91,9 @@ def test_reset_text_off_never_encodes_episode_instruction(use_text, monkeypatch)
     mock._cache_icl_context=lambda *args: cached.append(mock.target_prompt_embeds.clone())
     monkeypatch.setattr(torch.cuda, 'memory_allocated', lambda *_: 0)
     monkeypatch.setattr(torch.cuda, 'memory_reserved', lambda *_: 0)
-    scope['_reset_icl'](mock, 'private episode instruction', True, '', '', 1, 5,
-                        use_text=use_text)
-    assert encoded == (['private episode instruction'] if use_text else [])
-    torch.testing.assert_close(cached[0], prompt if use_text else empty)
+    scope['_reset_icl'](mock, '' if target_text_source == 'empty' else 'private episode instruction', True, '', '', 1, 5,
+                        use_text=use_text, target_text_source=target_text_source,
+                        icl_text_source='cached' if use_text and target_text_source == 'empty' else 'target')
+    needs_instruction = use_text and target_text_source == 'instruction'
+    assert encoded == (['private episode instruction'] if needs_instruction else [])
+    torch.testing.assert_close(cached[0], prompt if needs_instruction else empty)

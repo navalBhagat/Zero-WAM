@@ -25,6 +25,8 @@ class OnlineSession:
         self.initial_frame = None
         self.encoder_cache = None
         self.demo, cached_text = server._load_or_encode_icl(request["icl_video_path"], request["icl_latent_path"])
+        if self.method in ("icl", "oracle") and cached_text is None:
+            raise ValueError("ICL teacher requires cached text_emb in the human latent file")
         if self.settings.get("save_demo", True):
             torch.save(dict(demo=self.demo.cpu()), self.root / "demo.pt")
         server.online_demo = (request["icl_latent_path"], request["icl_video_path"], self.demo, cached_text)
@@ -38,7 +40,8 @@ class OnlineSession:
         """Rebuild caches from actual observations; never reuse teacher predictions."""
         server = self.server
         server._reset(prompt=self.request.get("prompt", ""), use_icl=use_demo,
-                      use_text=False, target_text_source="empty", icl_text_source="target",
+                      use_text=use_demo, target_text_source="empty",
+                      icl_text_source="cached" if use_demo else "target",
                       icl_video_path=self.request["icl_video_path"],
                       icl_latent_path=self.request["icl_latent_path"],
                       video_guidance_scale=1.0, icl_guidance_scale=5.0 if use_demo else 1.0)
@@ -133,7 +136,9 @@ class OnlineSession:
         self.encoder_cache = server.streaming_vae.feat_cache
         record = dict(chunk=index, seed=seed, method=self.method, reconstruction_error=error,
                       history_chunks=index, seconds=time.perf_counter() - started,
-                      teacher_uses_text=False, student_uses_text=False,
+                      teacher_uses_text=self.method in ("icl", "oracle"),
+                      teacher_caption_source="cached" if self.method in ("icl", "oracle") else None,
+                      target_text_source="empty", student_uses_text=False,
                       solver_steps=server.job_config.num_inference_steps,
                       dtype=str(server.dtype), model_path=server.job_config.model_path,
                       student_uses_icl=self.method == "icl", fallback=False)

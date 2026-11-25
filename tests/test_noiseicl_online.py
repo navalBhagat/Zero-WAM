@@ -30,11 +30,13 @@ class Server:
         self.calls = []
 
     def _load_or_encode_icl(self, *args):
-        return torch.zeros(1, 48, 2, 4, 4), None
+        return torch.zeros(1, 48, 2, 4, 4), torch.ones(1, 2, 8)
 
     def _reset(self, **kwargs):
         self.use_icl = kwargs["use_icl"]
-        assert not kwargs["use_text"]
+        assert kwargs["use_text"] == kwargs["use_icl"]
+        assert kwargs["icl_text_source"] == ("cached" if kwargs["use_icl"] else "target")
+        assert kwargs["target_text_source"] == "empty"
         self.chunk_idx = 0
         self.init_latent = None
         self.streaming_vae.feat_cache = []
@@ -78,6 +80,8 @@ def test_online_reversal_uses_same_actual_history_without_demo_leakage(tmp_path,
     assert session.encoder_cache == ["initial", "actual"]
     rows = [json.loads(line) for line in (tmp_path / "chunks.jsonl").read_text().splitlines()]
     assert all(row["reconstruction_error"] < 1e-6 for row in rows)
+    assert all(row["teacher_uses_text"] and row["teacher_caption_source"] == "cached" for row in rows)
+    assert all(not row["student_uses_text"] for row in rows)
     first = torch.load(tmp_path / "pairs/chunk_0000.pt", weights_only=True)
     assert first["mask"][:, :, :1].sum() == 0
     assert first["mask"][:, :, 1:].sum() > 0
@@ -109,3 +113,12 @@ def test_demo_cache_key_includes_video_path_when_latent_path_is_empty():
     import pytest
     with pytest.raises(FileNotFoundError):
         scope["_load_or_encode_icl"](mock, "/missing/b.mp4", "")
+
+
+def test_teacher_fails_explicitly_if_cached_caption_is_missing(tmp_path):
+    import pytest
+    server = Server()
+    server._load_or_encode_icl = lambda *args: (torch.zeros(1, 48, 2, 4, 4), None)
+    with pytest.raises(ValueError, match="requires cached text_emb"):
+        OnlineSession(server, dict(prompt="", icl_video_path="", icl_latent_path="demo",
+            noise_session=dict(method="oracle", directory=str(tmp_path), seed=1234)))

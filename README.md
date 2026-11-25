@@ -14,8 +14,10 @@ patch transformer. It receives Gaussian noise, human video latents, robot histor
 and prior actions; the Zero-WAM backbone still receives no human context or text.
 
 External DINO/reward guidance is removed. Native ICL classifier-free guidance
-remains part of the teacher. The new campaigns use empty text embeddings even for
-the teacher; they must not be pooled with older cached-caption experiments.
+remains part of the teacher. ICL predictions use the demo's cached caption, with
+an empty target-instruction embedding to match the original author's setup. Inversion/control/learned sampling use no
+text or human KV context. Do not pool runs made before this caption restoration
+with the caption-restored campaign.
 
 Five campaigns are implemented: seven-task smoke evaluation, multi-scene signal
 evaluation, a 100-pair collection benchmark, grouped dataset collection, and

@@ -34,7 +34,7 @@ def select_text(use_text, prompt_embedding, empty_embedding):
 
 
 def select_icl_text(source, use_text, target_embedding, cached_embedding):
-    """Explicit legacy-caption diagnostic; ordinary runs keep the target embedding."""
+    """Select the cached human caption independently from target text."""
     if source not in ('target', 'cached'):
         raise ValueError('ICL_TEXT_SOURCE must be target or cached')
     if source == 'target':
@@ -42,7 +42,7 @@ def select_icl_text(source, use_text, target_embedding, cached_embedding):
     if not use_text:
         raise ValueError('ICL_TEXT_SOURCE=cached requires USE_TEXT=1')
     if cached_embedding is None:
-        raise ValueError('Legacy text test requires text_emb in the human latent file')
+        raise ValueError('Cached-caption ICL requires text_emb in the human latent file')
     return cached_embedding
 
 

@@ -39,7 +39,7 @@ def evaluate(campaign, manifest, job):
                 env = dict(os.environ, NOISE_METHOD="learned" if method == "learned_shuffled" else method, NOISE_OUTPUT=str(directory / "noise"),
                     TEST_NUM="1", EPISODE_OFFSET="0", START_SEED=str(job["scene"]), SEED="0",
                     SAMPLING_SEED=str(settings["sampling_seed"]), ICL_SEED="0",
-                    USE_ICL="1", USE_TEXT="0", TEXT_GUIDANCE_SCALE="1", ICL_GUIDANCE_SCALE="5",
+                    USE_ICL="1", USE_TEXT="1" if method == "icl" else "0", TEXT_GUIDANCE_SCALE="1", ICL_GUIDANCE_SCALE="5",
                     NOISE_INVERSION_SCENE_REGISTRY=str(trial.parent / "scenes.json"),
                     NOISE_INVERSION_RESERVED_SCENES=",".join(map(str, seeds)), NOISE_INVERSION_MAX_SCENE_ATTEMPTS="20",
                     NOISE_INVERSION_STEP_TIMEOUT="90")
@@ -69,8 +69,12 @@ def evaluate(campaign, manifest, job):
             if (episode["simulator_seed"], episode["task_instruction"]) != (accepted, instruction):
                 raise ValueError("Comparison methods do not share the same scene/instruction")
             metadata = episode["server"]
-            if metadata.get("noise_method") != ("learned" if method == "learned_shuffled" else method) or metadata["use_text"]:
-                raise ValueError("Unexpected effective method/text conditioning")
+            expected_method = "learned" if method == "learned_shuffled" else method
+            if (metadata.get("noise_method") != expected_method or
+                    metadata["use_text"] != (method == "icl") or
+                    metadata.get("cached_caption_used", False) != (method == "icl") or
+                    metadata.get("model_text") != "" or metadata.get("target_text_source") != "empty"):
+                raise ValueError("Unexpected method/caption/instruction conditioning")
             if method != "icl" and metadata["use_icl"]:
                 raise ValueError("Student received ICL context")
             records = [json.loads(line) for line in (directory / "noise/chunks.jsonl").read_text().splitlines()]

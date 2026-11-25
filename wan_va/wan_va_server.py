@@ -629,8 +629,10 @@ class VA_Server:
         from .conditioning import flag
         self.icl_text_source = icl_text_source or os.environ.get("ICL_TEXT_SOURCE", "target")
         self.use_text = flag(getattr(self.job_config, "use_text", False) if use_text is None else use_text, "use_text")
-        if self.use_text and not prompt:
-            raise ValueError("Robotwin ICL inference requires a prompt")
+        self.target_text_source = target_text_source or os.environ.get("TARGET_TEXT_SOURCE", "instruction")
+        requires_instruction = self.use_text and self.target_text_source == "instruction"
+        if requires_instruction and not prompt:
+            raise ValueError("Instruction conditioning requires a prompt")
         # Load only when enabled; reuse weights but replace reference each episode.
         self.cached_caption_used = False
         reset_timer.mark('state_initialization')
@@ -666,12 +668,12 @@ class VA_Server:
         self.action_norm_method = self.job_config.action_norm_method
 
         reset_timer.mark('cache_and_state_reset')
-        if not self.use_text and self.empty_text_emb is not None:
+        if not requires_instruction and self.empty_text_emb is not None:
             self.prompt_embeds = self.empty_text_emb.clone()
             self.negative_prompt_embeds = self.empty_text_emb.clone()
         else:
             self.prompt_embeds, self.negative_prompt_embeds = self.encode_prompt(
-                prompt=prompt if self.use_text else "", negative_prompt="",
+                prompt=prompt if requires_instruction else "", negative_prompt="",
                 do_classifier_free_guidance=True, max_sequence_length=512,
                 device=self.device, dtype=self.dtype,
             )
@@ -689,7 +691,6 @@ class VA_Server:
             not self.use_icl_cfg and self.video_guidance_scale > 1.0
         )
         from .conditioning import select_target_text
-        self.target_text_source = target_text_source or os.environ.get("TARGET_TEXT_SOURCE", "instruction")
         self.target_prompt_embeds = select_target_text(
             self.use_text, self.target_text_source, self.prompt_embeds, self.negative_prompt_embeds,
         )

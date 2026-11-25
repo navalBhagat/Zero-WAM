@@ -20,4 +20,5 @@ all histories per seed. Partial attempts are archived, not combined with new fil
 
 Historical campaign directories are unchanged. They retain their old schema and
 scientific settings; they are not automatically migrated or merged into the new
-caption-free online-oracle analysis.
+current online-oracle analysis. Caption-free and caption-restored runs must be
+kept separate; effective sources are recorded in metadata and chunk records.

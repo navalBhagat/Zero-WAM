@@ -20,7 +20,8 @@ def completed_client(command, *, env, **kwargs):
     save_json(output / "config.json", dict(episodes=[dict(status="completed", success=False,
         simulator_seed=100001, task_instruction=env.get("NOISE_INSTRUCTION", "Put the cup down"),
         rollout_chunks=2, simulator_action_count=32,
-        server=dict(noise_method=method, use_text=False, use_icl=method == "icl"))]))
+        server=dict(noise_method=method, use_text=method == "icl", use_icl=method == "icl",
+                    cached_caption_used=method == "icl", model_text="", target_text_source="empty"))]))
     noise = output / "noise"
     noise.mkdir(exist_ok=True)
     (noise / "chunks.jsonl").write_text("\n".join(json.dumps(dict(reconstruction_error=.01 if method == "oracle" else None)) for _ in range(2)))
