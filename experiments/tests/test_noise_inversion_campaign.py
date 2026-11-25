@@ -1,222 +1,64 @@
-"""Submission, accounting and reporting contracts without Slurm/GPU access."""
+"""Five-stage plans, leakage boundaries and bounded Slurm submission."""
 import json
-import tempfile
-import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from experiments.noise_inversion import campaign
-from experiments.noise_inversion.config import TASKS, Trial
-from experiments.noise_inversion.records import save_json
-from experiments.noise_inversion.report import collect, report
+import pytest
+
+from experiments.noiseicl.config import Settings
+from experiments.noiseicl.dataset import index_contexts
+from experiments.noiseicl.planning import plan
+from experiments.noiseicl.submission import submit
+from experiments.noiseicl.reporting import report
+from experiments.runtime.records import save_json
 
 
-def fake_snapshot(path):
-    path.write_text("snapshot")
-    return "digest"
+def trajectory_index(root):
+    records = []
+    for task in range(3):
+        for number in range(3):
+            source = root / f"source_{task}_{number}"
+            (source / "history").mkdir(parents=True)
+            for name in ("initial.pt", "demo.pt", "history/chunk_0000.pt"):
+                (source / name).touch()
+            records.append(dict(task=f"seen_{task}", trajectory_id=str(number), scene_id=str(number),
+                simulator_seed=100000 + number, demo_id=str(number), demo_latent=str(source / "demo.pt"),
+                initial=str(source / "initial.pt"), history=str(source / "history"), chunk_count=2))
+    manifest = root / "trajectories.jsonl"
+    manifest.write_text("\n".join(map(json.dumps, records)))
+    index_contexts(manifest, root / "index", points=2, task_limit=3, trajectories_per_task=3)
+    return root / "index/index.json"
 
 
-class CampaignTests(unittest.TestCase):
-    def make_plan(self, root):
-        with patch.object(campaign, "snapshot", side_effect=fake_snapshot):
-            return campaign.plan(root, list(TASKS), [100000, 100001], [1234, 5678])
-
-    def test_plan_grid_and_first_calibration_batch(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory) / "campaign"
-            manifest = self.make_plan(root)
-            self.assertEqual(len(manifest["runs"]), 28)
-            self.assertEqual(len(manifest["jobs"]), 14)
-            self.assertTrue(all(len(job["run_paths"]) == 2 for job in manifest["jobs"]))
-            self.assertEqual([r["settings"]["task"] for r in manifest["runs"][:7]], list(TASKS))
-            self.assertEqual(manifest["runs"][0]["path"], "trials/place_bread_basket/scene_100000_noise_1234")
-            self.assertTrue(all(not job["submissions"] for job in manifest["jobs"]))
-            with self.assertRaises(FileExistsError):
-                self.make_plan(root)
-
-    def test_submit_limit_account_and_resume(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory) / "campaign"
-            self.make_plan(root)
-            with patch.object(campaign, "fingerprint", return_value=("digest", {})), \
-                 patch.object(campaign.subprocess, "check_output", side_effect=["11\n", "12\n", "13\n"]) as sbatch:
-                jobs = campaign.submit(root, "account_a", limit=2)
-                self.assertEqual(jobs, ["11", "12"])
-                command = sbatch.call_args_list[1].args[0]
-                self.assertIn("--account=account_a", command)
-                self.assertTrue(all(not any(arg.startswith("--dependency") for arg in call.args[0])
-                                    for call in sbatch.call_args_list))
-                jobs = campaign.submit(root, "account_b", limit=1)
-                self.assertEqual(jobs, ["13"])
-                data = json.loads((root / "manifest.json").read_text())
-                self.assertEqual(data["jobs"][2]["submissions"][0]["account"], "account_b")
-                self.assertEqual(sbatch.call_args.kwargs["env"]["NOISE_INVERSION_JOB_ROOT"], str(root / "jobs" / data["jobs"][2]["name"]))
-
-    def test_account_is_optional_and_login_labels_remain_separate(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary) / "campaign"
-            self.make_plan(root)
-            with patch.object(campaign, "fingerprint", return_value=("digest", {})), \
-                 patch.object(campaign.getpass, "getuser", return_value="login_a"), \
-                 patch.object(campaign.subprocess, "check_output", return_value="11\n") as sbatch:
-                campaign.submit(root, None, limit=1)
-                self.assertFalse(any(value.startswith("--account") for value in sbatch.call_args.args[0]))
-                manifest = json.loads((root / "manifest.json").read_text())
-                self.assertEqual(manifest["jobs"][0]["submissions"][0]["account"], "default-login:login_a")
-                with patch.object(campaign.getpass, "getuser", return_value="login_b"):
-                    campaign.submit(root, None, limit=1)
-
-    def test_active_job_is_not_retried(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory) / "campaign"
-            self.make_plan(root)
-            with patch.object(campaign, "fingerprint", return_value=("digest", {})), \
-                 patch.object(campaign.subprocess, "check_output", return_value="11\n") as sbatch:
-                campaign.submit(root, "account_a", limit=1)
-                with patch.object(campaign, "active_job", return_value=True):
-                    campaign.submit(root, "account_a", limit=1, retry=True)
-                second = sbatch.call_args.kwargs["env"]["NOISE_INVERSION_JOB_ROOT"]
-                self.assertNotEqual(second, str(root / "jobs/place_bread_basket_noise_1234"))
-
-    def test_group_skips_completed_scenes_and_reuses_one_inference_callback(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary) / "campaign"
-            manifest = self.make_plan(root)
-            group = manifest["jobs"][0]
-            save_json(root / group["run_paths"][0] / "summary.json", dict(status="completed"))
-            calls = []
-            infer = object()
-            def runner(path, trial, callback, **kwargs):
-                calls.append((path, callback, kwargs["retry"]))
-            result = campaign.run_group(root, group, manifest, infer, retry=True, runner=runner)
-            self.assertEqual(result["skipped"], [group["run_paths"][0]])
-            self.assertEqual(len(calls), 1)
-            self.assertIs(calls[0][1], infer)
-            self.assertTrue(calls[0][2])
-
-    def test_group_keeps_trying_other_scenes_after_trial_error(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary) / "campaign"
-            manifest = self.make_plan(root)
-            group = manifest["jobs"][0]
-            def runner(path, trial, infer, **kwargs):
-                if trial.scene_seed == 100000:
-                    raise RuntimeError("interrupted scene")
-            result = campaign.run_group(root, group, manifest, object(), runner=runner)
-            self.assertEqual(len(result["incomplete"]), 1)
-            self.assertEqual(result["completed"], [group["run_paths"][1]])
-
-    def test_costs_count_shared_job_once(self):
-        import csv
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary) / "campaign"
-            manifest = self.make_plan(root)
-            group = manifest["jobs"][0]
-            save_json(root / "jobs" / group["name"] / "diagnostics/job_timing.json",
-                      dict(allocated_seconds=3600, exit_code=1))
-            report(root, plots=False)
-            with (root / "costs.csv").open() as stream:
-                costs = list(csv.DictReader(stream))
-            self.assertEqual(len(costs), 14)
-            self.assertEqual(sum(float(row["estimated_sbus"]) for row in costs), 128)
-            _, tables = collect(root)
-            self.assertEqual(tables[0]["incomplete"], 2)
-
-    def test_provenance_includes_noise_package(self):
-        from experiments.campaign.provenance import files
-        self.assertTrue(any(str(path).endswith("experiments/noise_inversion/pilot.py") for path in files()))
-
-    def test_source_drift_rejected_before_submission(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory) / "campaign"
-            self.make_plan(root)
-            with patch.object(campaign, "fingerprint", return_value=("changed", {})):
-                with self.assertRaisesRegex(ValueError, "Source changed"):
-                    campaign.submit(root, "account_a")
-
-    def test_common_denominator_rescue_and_failed_source_breakdown(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            runs = []
-            outcomes = [(True, False, True), (False, True, False), (False, False, True)]
-            for index in range(4):
-                trial = Trial("place_bread_basket", 100000 + index, 1234)
-                path = trial.directory(root)
-                runs.append(dict(settings=trial.to_dict(), path=str(path.relative_to(root)), submissions=[]))
-                if index == 3:
-                    save_json(path / "summary.json", dict(status="incomplete", error="GPU crash"))
-                    continue
-                source, control, replay = outcomes[index]
-                save_json(path / "summary.json", dict(status="completed", task=trial.task,
-                    simulator_seed=trial.scene_seed, source_success=source, control_success=control,
-                    replay_success=replay, replay_success_within_source_horizon=replay,
-                    replay_extended_beyond_saved_noise=False))
-            save_json(root / "manifest.json", dict(runs=runs, sbu_per_hour=128))
-            _, table = collect(root)
-            row = table[0]
-            self.assertEqual(row["valid_pairs"], 3)
-            self.assertEqual(row["incomplete"], 1)
-            self.assertEqual(row["rescues"], 2)
-            self.assertEqual(row["control_failures"], 2)
-            self.assertEqual(row["regressions"], 1)
-            self.assertEqual(row["source_failure_pairs"], 2)
-            self.assertEqual(row["source_failure_replay_successes"], 1)
-            report(root, plots=False)
-            for name in ("trials.csv", "results.csv", "results.md", "costs.csv"):
-                self.assertTrue((root / name).is_file())
-
-    def test_feasibility_attempts_are_reported_separately_from_policy_failures(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            trial = Trial("place_object_scale", 100000, 1234)
-            save_json(root / "manifest.json", dict(sbu_per_hour=128, runs=[dict(
-                settings=trial.to_dict(), path=str(trial.directory(root).relative_to(root)), submissions=[])]))
-            save_json(root / "trials/place_object_scale/scenes.json", dict(slots={"100000": dict(
-                accepted_seed=100001, attempts=[dict(seed=100000, status="infeasible", reason="expert failed"),
-                                                dict(seed=100001, status="accepted")])}))
-            _, tables = collect(root)
-            self.assertEqual(tables[0]["infeasible_scene_checks"], 1)
-            self.assertEqual(tables[0]["valid_pairs"], 0)
-            report(root, plots=False)
-            self.assertIn("expert failed", (root / "scene_attempts.csv").read_text())
-
-    def test_startup_failure_is_incomplete(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            trial = Trial("place_object_scale", 100000, 1234)
-            path = trial.directory(root)
-            save_json(path / "diagnostics/job_timing.json", dict(exit_code=1))
-            save_json(root / "manifest.json", dict(runs=[dict(settings=trial.to_dict(), path=str(path.relative_to(root)), submissions=[])]))
-            _, table = collect(root)
-            self.assertEqual(table[0]["incomplete"], 1)
-            self.assertIsNone(table[0]["source_success_pct"])
+def test_five_campaigns_and_training_dependencies(tmp_path):
+    contexts = trajectory_index(tmp_path)
+    with patch("experiments.noiseicl.planning.snapshot", side_effect=lambda path: path.write_text("snapshot") and "digest"):
+        for stage, count in ((1, 7), (2, 140), (3, 2), (4, 2)):
+            manifest = plan(tmp_path / f"stage{stage}", Settings(stage=stage,
+                scene_count=20 if stage == 2 else 1), contexts=contexts if stage > 2 else None)
+            assert len(manifest["jobs"]) == count
+            if stage == 4:
+                seeds = [pair["seed"] for item in manifest["jobs"] for pair in item["pairs"]]
+                assert len(seeds) == len(set(seeds))
+                for job in manifest["jobs"]:
+                    save_json(tmp_path / "stage4/jobs" / job["name"] / "summary.json", dict(status="completed"))
+                    for pair in job["pairs"]:
+                        save_json(tmp_path / "stage4/pairs" / pair["id"] / "record.json",
+                                  dict(pair, status="completed", reconstruction_error=.01, seconds=1, fallback=False))
+            report(tmp_path / f"stage{stage}")
+        manifest = plan(tmp_path / "stage5", Settings(stage=5), dataset=tmp_path / "stage4")
+    assert manifest["jobs"][0]["kind"] == "train"
+    assert any(job["name"].startswith("seen_") for job in manifest["jobs"])
+    with patch("experiments.noiseicl.submission.fingerprint", return_value=("digest", {})), \
+         patch("experiments.noiseicl.submission.subprocess.check_output", side_effect=["123", "124"]) as sbatch:
+        assert submit(tmp_path / "stage5", limit=2) == ["123", "124"]
+    assert "--dependency=afterok:123" in sbatch.call_args_list[1].args[0]
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
-class Das6CampaignTests(unittest.TestCase):
-    def test_seven_task_pilot_uses_das6_launchers_and_no_snellius_charges(self):
-        import csv
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory) / "das6"
-            with patch.object(campaign, "snapshot", side_effect=fake_snapshot):
-                manifest = campaign.plan(root, list(TASKS), [100000], [1234],
-                                         hours=1.5, estimated_minutes=60, cluster="das6")
-            self.assertEqual(len(manifest["runs"]), 7)
-            self.assertEqual(len(manifest["jobs"]), 7)
-            self.assertIsNone(manifest["sbu_per_hour"])
-            self.assertTrue(all(len(job["run_paths"]) == 1 for job in manifest["jobs"]))
-            with patch.object(campaign, "fingerprint", return_value=("digest", {})), \
-                 patch.object(campaign.subprocess, "check_output", side_effect=[str(i) for i in range(7)]) as sbatch:
-                campaign.submit(root, limit=7)
-            for call in sbatch.call_args_list:
-                command = call.args[0]
-                self.assertTrue(command[-1].endswith("jobs/das6/noise_inversion_campaign.sbatch"))
-                self.assertFalse(any("gpu_a100" in arg or arg.startswith("--dependency") for arg in command))
-                self.assertEqual(call.kwargs["env"]["SAMPLING_SEED"], "1234")
-            report(root, plots=False)
-            with (root / "costs.csv").open() as stream:
-                rows = list(csv.DictReader(stream))
-            self.assertTrue(all(row["cluster"] == "das6" and row["estimated_sbus"] == "" for row in rows))
+def test_unseen_tasks_cannot_enter_context_index(tmp_path):
+    source = tmp_path / "bad.jsonl"
+    row = dict(task="open_microwave", trajectory_id="1", scene_id="1", simulator_seed=1,
+               demo_id="1", demo_latent="x", initial="x", history="x", chunk_count=2)
+    source.write_text(json.dumps(row))
+    with pytest.raises(ValueError, match="Unseen task"):
+        index_contexts(source, tmp_path / "index", task_limit=1)

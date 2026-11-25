@@ -94,18 +94,6 @@ _action_stats_path = (
 va_robotwin_cfg.action_stats_path = str(_action_stats_path)
 va_robotwin_cfg.norm_stat = load_robotwin_norm_stat(_action_stats_path)
 
-# Optional external reward; reference indices use the existing 12 FPS resampling.
-va_robotwin_cfg.external_strength = va_robotwin_cfg.guidance_strength if va_robotwin_cfg.use_guidance else 0.0
-va_robotwin_cfg.external_every = int(os.environ.get("GUIDANCE_EVERY", "10"))
-va_robotwin_cfg.external_max_norm = float(os.environ.get("GUIDANCE_MAX_NORM", "1"))
-va_robotwin_cfg.dino_checkpoint = os.environ.get("GUIDANCE_CHECKPOINT", "")
-
-# Auto uses the MP4 when present, otherwise reconstructs the cached human latent.
-va_robotwin_cfg.external_reference_source = os.environ.get("GUIDANCE_REFERENCE_SOURCE", "auto")
-va_robotwin_cfg.external_decoder_dtype = os.environ.get("GUIDANCE_DECODER_DTYPE", "float32")
 va_robotwin_cfg.video_state_fp32 = os.environ.get("VIDEO_STATE_FP32", "0") == "1"
 
 va_robotwin_cfg.profile_timing = os.environ.get("PROFILE_TIMING", "0") == "1"
-
-# Explicit zero-based human RGB indices; comma-separated, default frame 0.
-va_robotwin_cfg.reference_frames = os.environ.get("GUIDANCE_REFERENCE_FRAMES", "0")

@@ -26,7 +26,7 @@ def test_terminal_chunk_stops_and_skips_cache_update(success_at):
                  diagnostic_call=lambda label, fn, *args, **kwargs: fn(*args, **kwargs),
                  prompt='test', save_visualization=False, video_guidance_scale=1,
                  action_guidance_scale=1, full_action_history=[], full_obs_list=[],
-                 gen_video_list=[], guidance_selections=[],
+                 gen_video_list=[],
                  rollout_chunk=0, snapshots=SimpleNamespace(write=lambda *args: snapshots.append(args)),
                  np=np, euler2quat=lambda *args: np.zeros(4), format_obs=lambda obs, prompt: obs,
                  succ=False)

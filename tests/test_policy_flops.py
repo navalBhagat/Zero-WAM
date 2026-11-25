@@ -9,7 +9,7 @@ import pytest
 import torch
 
 PACKAGE='_flop_test'
-pkg=types.ModuleType(PACKAGE);pkg.__path__=[str(Path(__file__).resolve().parents[1]/'wan_va/guidance')]
+pkg=types.ModuleType(PACKAGE);pkg.__path__=[str(Path(__file__).resolve().parents[1]/'wan_va/diagnostics')]
 sys.modules[PACKAGE]=pkg
 spec=importlib.util.spec_from_file_location(PACKAGE+'.flops',Path(pkg.__path__[0])/'flops.py')
 flops=importlib.util.module_from_spec(spec);sys.modules[spec.name]=flops;spec.loader.exec_module(flops)
@@ -70,15 +70,15 @@ def test_request_counts_reset_and_backward_and_disabled_mode(tmp_path,monkeypatc
                     _=torch.ones(2,3)@torch.ones(3,4)
             else:
                 x=torch.ones(2,3,requires_grad=True)
-                with flops.component('reward_vae_decode'):
+                with flops.component('observation_encode'):
                     y=x@torch.ones(3,4)
-                with flops.component('guidance_backward'):
+                with flops.component('input_backward'):
                     torch.autograd.grad(y.sum(),x)
             return {}
     s=Server();reset=s.infer({'reset':True})['compute'];total=s.infer({})['compute']
     assert reset['components_flops']['text_encoder']==48
-    assert total['components_flops']['reward_vae_decode']==48
-    assert total['components_flops']['guidance_backward']>=48
+    assert total['components_flops']['observation_encode']==48
+    assert total['components_flops']['input_backward']>=48
     assert total['counted_flops']>reset['counted_flops']
     assert len((tmp_path/'diagnostics/flops.jsonl').read_text().splitlines())==2
     monkeypatch.setenv('COUNT_POLICY_FLOPS','0')

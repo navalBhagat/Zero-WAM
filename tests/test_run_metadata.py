@@ -48,30 +48,19 @@ def test_episode_updates_preserve_initialization_and_other_episodes(tmp_path):
 
 
 @pytest.mark.parametrize('use_text', [False, True])
-def test_server_reports_effective_text_and_guidance(use_text):
+def test_server_reports_effective_text_and_conditioning(use_text):
     server = next(n for n in ast.parse((ROOT / 'wan_va/wan_va_server.py').read_text()).body
                   if isinstance(n, ast.ClassDef) and n.name == 'VA_Server')
     method = next(n for n in server.body if isinstance(n, ast.FunctionDef) and n.name == '_episode_metadata')
     scope = dict(os=os)
     exec(compile(ast.Module(body=[method], type_ignores=[]), '<metadata-method>', 'exec'), scope)
-    job = SimpleNamespace(external_every=10, external_max_norm=1, dino_checkpoint='/dino',
-                          reference_frames='65', model_path='/model',
+    job = SimpleNamespace(model_path='/model',
                           num_inference_steps=50, action_num_inference_steps=50,
                           frame_chunk_size=2, video_state_fp32=True)
-    mock = SimpleNamespace(use_text=use_text, use_icl=True, use_guidance=True,
-                           external_strength=.01, external_reference_kind='reconstructed_latent',
-                           guidance_selector=SimpleNamespace(fixed_frames=[65], frame_count=73),
+    mock = SimpleNamespace(use_text=use_text, use_icl=True,
                            job_config=job, dtype=torch.bfloat16, icl_guidance_scale=5,
                            video_guidance_scale=1, vae=SimpleNamespace(decoder=torch.nn.Linear(1,1)))
     result = scope['_episode_metadata'](mock, 'Open the door', dict(icl_latent_path='/human.pth'))
     assert result['model_text'] == ('Open the door' if use_text else '')
     assert result['icl_context_text'] == result['model_text']
     assert result['cached_caption_used'] is False
-    assert result['guidance']['selection_mode'] == 'explicit_fixed_frames'
-    assert result['guidance']['fixed_reference_frames'] == [65]
-    assert 'reference_start' not in result['guidance']
-    assert 'reference_stop' not in result['guidance']
-    assert result['guidance']['decoder_dtype'] == 'torch.float32'
-    mock.use_guidance = False
-    mock.external_strength = 0
-    assert scope['_episode_metadata'](mock, 'Open the door', {})['guidance'] is None

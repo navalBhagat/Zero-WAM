@@ -35,7 +35,6 @@ python -m evaluation.robotwin.eval_policy_client_openpi \
     --action_guidance_scale 1 \
     --use_icl "${USE_ICL:-1}" \
     --use_text "${USE_TEXT:-0}" \
-    --use_guidance "${USE_GUIDANCE:-0}" \
     --render_samples_per_pixel "${RENDER_SAMPLES_PER_PIXEL:-32}" \
     --profile_timing "${PROFILE_TIMING:-0}" \
     --profile_sync_gpu "${PROFILE_SYNC_GPU:-0}" \

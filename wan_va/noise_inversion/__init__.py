@@ -1,1 +1,1 @@
-"""Inference-only video flow inversion. No training or reward dependencies."""
+"""Matched-history flow inversion and residual noise adapters."""

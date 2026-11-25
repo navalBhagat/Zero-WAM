@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 from experiments.io import read_json
-from experiments.noise_inversion.scenes import ProbeResult, SceneSearch, select_scene, setup_rejection
+from experiments.runtime.scenes import ProbeResult, SceneSearch, select_scene, setup_rejection
 
 
 class SceneSearchTests(unittest.TestCase):
@@ -72,7 +72,7 @@ class SceneSearchTests(unittest.TestCase):
         self.assertFalse(setup_rejection(RuntimeError("CUDA out of memory")))
 
     def test_capture_receipt_survives_lost_registry_and_recovers_other_noise(self):
-        from experiments.noise_inversion.records import save_json
+        from experiments.runtime.records import save_json
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             receipt = root / "scene_10_noise_1/capture/scene_selection.json"
@@ -91,7 +91,7 @@ class SceneSearchTests(unittest.TestCase):
             self.assertEqual(second.accepted_seed(), 12)
 
     def test_historical_completed_capture_recovers_missing_acceptance(self):
-        from experiments.noise_inversion.records import save_json
+        from experiments.runtime.records import save_json
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             receipt = root / "scene_10_noise_1/capture/scene_selection.json"

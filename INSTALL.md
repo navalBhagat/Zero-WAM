@@ -31,10 +31,9 @@ python -m pip install -e . --no-deps
 python -m pip check
 ```
 
-The validated inference configuration uses A100, BF16/FlexAttention, and text-only
-CPU offload. Older GPUs may require precision/kernel changes; multiple GPUs do
-not automatically pool their memory. Training dependencies are separate; see
-[the archived README](old_readme.md#training).
+Inference uses BF16 model inputs and FP32 video state for noise inversion.
+Multiple GPUs do not automatically pool memory. The new residual adapter trains
+in the existing zerowam environment without updating the backbone.
 
 ## 2. RoboTwin environment
 
@@ -47,7 +46,7 @@ export ROBOTWIN_ROOT="$HOME/Robotwin"
 bash setup/robotwin/install.sh base
 
 # Load a compatible CUDA toolkit/compiler before this stage.
-# Use your GPU's compute capability: A100 = 8.0, Titan RTX = 7.5.
+# Use your GPU's compute capability: A100 = 8.0, RTX A6000 = 8.6, Titan RTX = 7.5.
 export TORCH_CUDA_ARCH_LIST="8.0"
 bash setup/robotwin/install.sh source
 ```
@@ -134,8 +133,8 @@ On rate limiting, wait, verify authentication, and retry. The space estimate add
 
 HumanGen may omit original human MP4s while providing their latents. The `eval`
 profile accepts this and reports missing optional videos; missing required latents
-still fail. Use `GUIDANCE_REFERENCE_SOURCE=latent` for guidance, or reconstruct
-MP4s from the latents separately. The downloader does not reconstruct videos.
+still fail. The inference server loads cached human latents directly; the
+downloader does not reconstruct videos.
 
 If the repository itself is on scratch, download directly into the expected paths
 without external-storage symlinks (add `--download --quota-free-gib REMAINING_GIB`
@@ -200,19 +199,76 @@ Client shell, after the server reports ready:
 ```bash
 conda activate robotwin
 export ROBOTWIN_ROOT="$HOME/Robotwin"
-TEST_NUM=1 SEED=0 USE_ICL=1 USE_TEXT=0 USE_GUIDANCE=0 ICL_GUIDANCE_SCALE=5 \
+TEST_NUM=1 SEED=0 USE_ICL=1 USE_TEXT=0 ICL_GUIDANCE_SCALE=5 \
   bash evaluation/robotwin/launch_client.sh "$PWD/results/smoke" place_empty_cup
 ```
 
-Metrics are saved under `results/smoke/stseed-*/metrics/place_empty_cup/res.json`;
-rollout videos are under the corresponding `visualization` directory. Confirm
-`total_num=1`, inspect the video, and stop the server when finished. One completed
-episode is a smoke test, not a success-rate estimate. The client default is 100
-episodes; set `TEST_NUM` explicitly. Native ICL + CFG is not language-only guidance.
+The output contains `config.json`, `results.csv`, `videos/` and `diagnostics/`.
+Inspect the episode's Boolean success and video, then stop the server. One episode
+is a smoke test, not a success-rate estimate. Set TEST_NUM explicitly.
 
-For batch evaluation, include readiness checks, a time limit, GPU memory logging,
-and server cleanup. The archived README describes the eight-GPU launcher: it runs
-independent server/client pairs, not one model split across eight GPUs.
+## 7. Five NoiseICL campaigns
+
+On DAS6, initialize the existing workspace before planning:
+
+```bash
+source "$HOME/nbhagat-workspace-env.sh"
+module load prun
+conda activate robotwin
+cd "$ZERO_WAM_ROOT"
+python experiments/scripts/noiseicl.py plan --stage 1 --cluster das6 \
+  --directory experiments/stages/01_smoke
+python experiments/scripts/noiseicl.py submit \
+  --directory experiments/stages/01_smoke --limit 1
+```
+
+Inspect the first full trial before submitting the remaining six with `--limit 6`.
+Use `--cluster snellius` for the corresponding cluster launcher. Jobs are planned
+without submission; the submit command is explicit. The default job ceiling is
+three hours because online reversal generates a new teacher prediction at every
+chunk. DAS6 long jobs belong in an allowed night/weekend window or an approved
+site arrangement; the 15-minute daytime template cannot cover full paired trials.
+
+| Stage | Purpose | Additional inputs |
+| --- | --- | --- |
+| 1 | One full matched comparison on each of seven unseen tasks | None beyond installed assets/model/human references |
+| 2 | Twenty distinct scene slots per unseen task | Override with --scenes if needed |
+| 3 | First 100 fixed-history noise pairs as a collection benchmark | --contexts /path/to/index.json |
+| 4 | Full grouped dataset collection; default pilot is 2000 pairs | --contexts /path/to/index.json |
+| 5 | Residual adapter training, seen/unseen evaluation and shuffled-demo control | --dataset /path/to/stage4 |
+
+All stages use `noiseicl.py plan --stage N --directory PATH`. Stage 5 submits
+training first; its evaluation jobs depend on successful training. Submission is
+bounded by `--limit` (default one); `--retry` preserves completed work and archives
+partial attempts. Existing old-guidance campaigns cannot resume under this runtime.
+Results and source snapshots stay inside the chosen campaign directory. Run:
+
+```bash
+python experiments/scripts/noiseicl.py report --directory CAMPAIGN --plots
+```
+
+For collection, supply normalized recorded robot histories, not just human videos.
+Print the required JSONL trajectory fields with `noiseicl.py schema`. Each history
+file is a CPU tensor dictionary containing `video` and normalized `actions`; the
+initial file contains `initial_frame`. Paths may be relative to the manifest.
+The simulator seed and human demo IDs must be correct to prevent split leakage.
+Build the grouped index before generating Gaussian seeds:
+
+```bash
+python experiments/scripts/noiseicl.py index --trajectories seen_trajectories.jsonl \
+  --output experiments/datasets/seen_contexts --tasks 5 \
+  --trajectories-per-task 20 --points 10
+```
+
+The seven unseen tasks are rejected from training data. Shared scenes/demos stay
+in one train/validation/test split. Collection needs real seen-task inputs, which
+are not created by running the seven-task unseen smoke campaign.
+
+Stage 5 defaults to an eight-block, width-512 patch transformer. For the initial
+100-pair overfit check, use --overfit-pairs 100; --architecture mlp selects the
+smaller baseline. --width, --layers, --heads, --train-steps and --batch are explicit
+planning options. A completed numerical run is not evidence that noise transfer
+or the trained adapter improves task success.
 
 ## Reproducibility and troubleshooting
 
@@ -226,5 +282,5 @@ independent server/client pairs, not one model split across eight GPUs.
   no dependency reinstall is needed. Temporary storage may expire and lack backups.
 - GPU hangs: inspect both server and client logs and measure memory. Renderer
   initialization alone does not prove camera capture works alongside the model.
-- Setup scripts have local syntax/offline tests. Validate builds and execution on
-  your target hardware before collecting results.
+- Validate builds and execution on your target hardware before collecting results.
+  General setup/model tests remain; only reward-guidance tests/docs were removed.

@@ -1,59 +1,45 @@
-import sys
+"""RoboTwin episode execution with optional online NoiseICL sampling."""
+import argparse
+from collections import deque
+from datetime import datetime
+import faulthandler
+import hashlib
+import importlib
+import importlib.util
+import json
 import os
+from pathlib import Path
+import random
 import subprocess
+import sys
+import time
+import traceback
+
+import cv2
+import imageio
+import imageio_ffmpeg
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
-import cv2
-from pathlib import Path
+import numpy as np
+from scipy.spatial.transform import Rotation as R
+import yaml
 
-robotwin_root = Path(
-    os.environ.get("ROBOTWIN_ROOT", "/path/to/your/RoboTwin")
-).expanduser()
+robotwin_root = Path(os.environ["ROBOTWIN_ROOT"]).expanduser()
 if str(robotwin_root) not in sys.path:
     sys.path.insert(0, str(robotwin_root))
-
-
-import os
 os.chdir(robotwin_root)
 
 from envs import CONFIGS_PATH
 from envs.utils.create_actor import UnStableError
-
-import numpy as np
-from pathlib import Path
-from collections import deque
-import traceback
-
-import yaml
-from datetime import datetime
-import importlib
-import argparse
-import pdb
-import hashlib
-import importlib.util
-import random
-from evaluation.robotwin.geometry import euler2quat
-from evaluation.robotwin.artifacts import diagnostic_path
-import numpy as np
-
 from description.utils.generate_episode_instructions import *
-import traceback
-
-import imageio
-import imageio_ffmpeg
-import numpy as np
-from pathlib import Path
-from scipy.spatial.transform import Rotation as R
-import json
-import faulthandler
-import time
-from pathlib import Path
-
-from evaluation.robotwin.websocket_client_policy import WebsocketClientPolicy
-from evaluation.robotwin.test_render import Sapien_TEST
+from evaluation.robotwin.artifacts import diagnostic_path
+from evaluation.robotwin.geometry import euler2quat
 from evaluation.robotwin.profiling import EpisodeProfiler
-from evaluation.robotwin.run_metadata import create_run, record_episode
+from evaluation.robotwin.render_probe import RenderProbe
 from evaluation.robotwin.rendering import configure_rendering, render_settings
+from evaluation.robotwin.run_metadata import create_run, record_episode
+from evaluation.robotwin.websocket_client_policy import WebsocketClientPolicy
+
 
 def diagnostic_call(label, function, *args, **kwargs):
     """Optionally bracket a blocking simulator/server call with timestamps."""
@@ -351,6 +337,15 @@ def select_icl_video(mapping, task_name, seed, episode_idx):
     return rng.choice(videos)
 
 
+def reference_task(mapping, task):
+    if os.environ.get("NOISE_SHUFFLE_DEMO") != "1":
+        return task
+    tasks = sorted(mapping)
+    if len(tasks) < 2:
+        raise ValueError("Shuffled-demo evaluation requires another demo task")
+    return tasks[(tasks.index(task) + 1) % len(tasks)]
+
+
 def resolve_icl_latent_path(video_path, latent_root):
     if not video_path or not latent_root:
         return ""
@@ -391,8 +386,7 @@ def main(usr_args):
     )
     use_icl = bool(usr_args.get("use_icl", 1))
     use_text = bool(usr_args.get("use_text", 0))
-    use_guidance = bool(usr_args.get("use_guidance", 0))
-    needs_reference = use_icl or use_guidance
+    needs_reference = True
     icl_video_mapping = (
         load_icl_human_video_map(usr_args["icl_human_video_map"])
         if needs_reference else None
@@ -413,7 +407,6 @@ def main(usr_args):
     args["save_root"] = save_root
     args["use_icl"] = use_icl
     args["use_text"] = use_text
-    args["use_guidance"] = use_guidance
     args["profile_timing"] = bool(usr_args.get("profile_timing", 0))
     args["profile_sync_gpu"] = bool(usr_args.get("profile_sync_gpu", 0))
     args["needs_reference"] = needs_reference
@@ -566,17 +559,12 @@ def eval_policy(task_name,
     suc_test_seed_list = []
 
 
-    noise_mode = os.environ.get("NOISE_INVERSION_MODE")
+    noise_mode = os.environ.get("NOISE_METHOD")
     if noise_mode:
         from evaluation.robotwin.watchdog import guard_method
         guard_method(TASK_ENV, "take_action")
         guard_method(TASK_ENV, "get_obs")
-    noise_directory = os.environ.get("NOISE_INVERSION_DIRECTORY")
-    source_episode = None
-    if noise_mode in ("replay", "control"):
-        from experiments.noise_inversion.records import read_episode
-        source_episode = read_episode(Path(noise_directory) / "capture")
-        st_seed = source_episode["simulator_seed"]
+    noise_directory = os.environ.get("NOISE_OUTPUT")
     now_seed = st_seed
     clear_cache_freq = args["clear_cache_freq"]
 
@@ -586,8 +574,8 @@ def eval_policy(task_name,
         render_freq = args["render_freq"]
         args["render_freq"] = 0
 
-        if noise_mode == "capture" and os.environ.get("NOISE_INVERSION_SCENE_REGISTRY"):
-            from experiments.noise_inversion.scenes import ProbeResult, SceneSearch, select_scene, setup_rejection
+        if noise_mode and os.environ.get("NOISE_INVERSION_SCENE_REGISTRY"):
+            from experiments.runtime.scenes import ProbeResult, SceneSearch, select_scene, setup_rejection
             from evaluation.robotwin.watchdog import guarded_call
 
             def probe_scene(candidate_seed):
@@ -609,7 +597,7 @@ def eval_policy(task_name,
             reserved = tuple(map(int, os.environ["NOISE_INVERSION_RESERVED_SCENES"].split(",")))
             search = SceneSearch(Path(os.environ["NOISE_INVERSION_SCENE_REGISTRY"]), st_seed,
                                  reserved, int(os.environ["NOISE_INVERSION_MAX_SCENE_ATTEMPTS"]),
-                                 Path(noise_directory) / "capture" / "scene_selection.json")
+                                 Path(noise_directory) / "scene_selection.json")
             now_seed, episode_info = select_scene(search, probe_scene)
             expert_check = False
 
@@ -620,14 +608,14 @@ def eval_policy(task_name,
                 TASK_ENV.close_env()
             except UnStableError as e:
                 TASK_ENV.close_env()
-                if source_episode is not None or os.environ.get("NOISE_INVERSION_STRICT_SCENE") == "1":
+                if noise_mode is not None:
                     raise RuntimeError("The requested simulator seed could not be reproduced")
                 now_seed += 1
                 args["render_freq"] = render_freq
                 continue
             except Exception as e:
                 TASK_ENV.close_env()
-                if source_episode is not None or os.environ.get("NOISE_INVERSION_STRICT_SCENE") == "1":
+                if noise_mode is not None:
                     raise RuntimeError("The requested simulator seed could not be reproduced")
                 now_seed += 1
                 args["render_freq"] = render_freq
@@ -639,7 +627,7 @@ def eval_policy(task_name,
             succ_seed += 1
             suc_test_seed_list.append(now_seed)
         else:
-            if source_episode is not None or os.environ.get("NOISE_INVERSION_STRICT_SCENE") == "1":
+            if noise_mode is not None:
                 raise RuntimeError("Requested scene does not pass expert feasibility")
             now_seed += 1
             args["render_freq"] = render_freq
@@ -657,8 +645,7 @@ def eval_policy(task_name,
         episode_info_list = [episode_info["info"]]
         results = generate_episode_descriptions(args["task_name"], episode_info_list, test_num)
         instruction = np.random.choice(results[0][instruction_type])
-        if source_episode is not None:
-            instruction = source_episode["task_instruction"]
+        instruction = os.environ.get("NOISE_INSTRUCTION", instruction)
         TASK_ENV.set_instruction(instruction=instruction)  # set language instruction
 
         if TASK_ENV.eval_video_path is not None:
@@ -694,11 +681,14 @@ def eval_policy(task_name,
 
         prompt = TASK_ENV.get_instruction()
         icl_video_path, icl_latent_path = "", ""
-        if args["needs_reference"]:
+        if os.environ.get("NOISE_DEMO_LATENT"):
+            icl_latent_path = os.environ["NOISE_DEMO_LATENT"]
+        elif args["needs_reference"]:
             icl_video_path = select_icl_video(
-                args["icl_video_mapping"], task_name, args["icl_seed"], now_id,
+                args["icl_video_mapping"], reference_task(args["icl_video_mapping"], task_name),
+                args["icl_seed"], now_id,
             )
-            # Native ICL and reconstructed DINO references both use this cache.
+            # Cached human latents are shared by the teacher and adapter.
             icl_latent_path = resolve_icl_latent_path(
                 icl_video_path, args["icl_latent_root"]
             )
@@ -718,25 +708,23 @@ def eval_policy(task_name,
             episode_offset=int(args.get("episode_offset", 0)),
             task_instruction=str(prompt), rendering=render_settings(),
             stopping_policy="robotwin_eval_success_after_each_action_skip_terminal_cache",
-            requested_conditioning=dict(use_icl=args["use_icl"], use_text=args["use_text"],
-                                        use_guidance=args["use_guidance"]),
+            requested_conditioning=dict(method=noise_mode,
+                use_icl=(noise_mode == "icl") if noise_mode else args["use_icl"],
+                use_text=False if noise_mode else args["use_text"]),
             selected_reference=dict(video=icl_video_path or None, latent=icl_latent_path or None),
         )
         ret = diagnostic_call("server reset / human-context cache", model.infer,
             dict(
                 reset=True,
-                **(dict(noise_capture_directory=noise_directory,
-                        sampling_seed=int(os.environ.get("SAMPLING_SEED", "1234")),
-                        target_text_source="empty", icl_text_source="cached")
-                   if noise_mode == "capture" else
-                   dict(target_text_source="empty", icl_text_source="target",
-                        sampling_seed=int(os.environ.get("SAMPLING_SEED", "1234")))
-                   if noise_mode in ("replay", "control") else {}),
+                noise_session=dict(method=noise_mode, directory=noise_directory,
+                                   seed=int(os.environ.get("SAMPLING_SEED", "1234")),
+                                   adapter=os.environ.get("NOISE_ADAPTER")) if noise_mode else None,
+                sampling_seed=int(os.environ.get("SAMPLING_SEED", "1234")),
+                target_text_source="empty", icl_text_source="target",
                 prompt=prompt,
                 save_visualization=save_visualization,
-                use_icl=args["use_icl"],
-                use_text=False if noise_mode in ("replay", "control") else args["use_text"],
-                use_guidance=args["use_guidance"],
+                use_icl=(noise_mode == "icl") if noise_mode else args["use_icl"],
+                use_text=False if noise_mode else args["use_text"],
                 icl_video_path=icl_video_path,
                 icl_latent_path=icl_latent_path,
                 video_guidance_scale=video_guidance_scale,
@@ -758,7 +746,6 @@ def eval_policy(task_name,
         compute_summary = ret.get('compute')
         if compute_summary is not None:
             record_episode(run_config, now_id, compute=compute_summary)
-        guidance_selections = []
         initial_obs = diagnostic_call("initial TASK_ENV.get_obs / camera capture", TASK_ENV.get_obs)
         inint_eef_pose = initial_obs['endpose']['left_endpose'] + \
         [initial_obs['endpose']['left_gripper']] + \
@@ -770,13 +757,10 @@ def eval_policy(task_name,
         from evaluation.robotwin.rollout_snapshots import RolloutSnapshots
         snapshots = RolloutSnapshots(
             Path(args['save_root']) / 'diagnostics' / 'snapshots' / f'episode_{now_id:03d}',
-            enabled=noise_mode == "capture" or os.environ.get("SAVE_ROLLOUT_SNAPSHOTS", "0") == "1")
+            enabled=bool(noise_mode) or os.environ.get("SAVE_ROLLOUT_SNAPSHOTS", "0") == "1")
         snapshots.write(initial_formatted_obs, -1, TASK_ENV.take_action_cnt, TASK_ENV.eval_success)
         rollout_chunk = 0
         first_obs = None
-        noise_exhausted = False
-        noise_fallback_chunks = 0
-        first_noise_fallback_chunk = None
         while TASK_ENV.take_action_cnt<TASK_ENV.step_lim:
             if first:
                 observation = diagnostic_call("first-chunk camera capture", TASK_ENV.get_obs)
@@ -787,25 +771,10 @@ def eval_policy(task_name,
                 video_guidance_scale=video_guidance_scale,
                 action_guidance_scale=action_guidance_scale,
             )
-            if noise_mode in ("replay", "control"):
-                inference_request["noise_replay_directory"] = noise_directory
-                inference_request["noise_source"] = "original" if noise_mode == "control" else "inverted"
-                inference_request["noise_continuation"] = os.environ.get("NOISE_INVERSION_CONTINUATION", "gaussian")
             ret = diagnostic_call("action-chunk inference", model.infer, inference_request)
-            if ret.get('guidance_reference') is not None:
-                guidance_selections.append(ret['guidance_reference'])
-                record_episode(run_config, now_id, guidance_selections=guidance_selections)
             if ret.get('compute') is not None:
                 compute_summary = ret['compute']
                 record_episode(run_config, now_id, compute=compute_summary)
-            if ret.get("noise_exhausted"):
-                noise_exhausted = True
-                break
-            if ret.get("noise_fallback"):
-                noise_exhausted = True
-                noise_fallback_chunks += 1
-                if first_noise_fallback_chunk is None:
-                    first_noise_fallback_chunk = rollout_chunk
             action = ret['action']
             if 'video' in ret:
                 imagined_video = ret['video']
@@ -890,10 +859,6 @@ def eval_policy(task_name,
         profile.close(success=succ)
         record_episode(
             run_config, now_id, status="completed", success=bool(succ),
-            noise_sequence_exhausted=noise_exhausted,
-            noise_continuation=os.environ.get("NOISE_INVERSION_CONTINUATION", "gaussian"),
-            noise_fallback_chunks=noise_fallback_chunks,
-            first_noise_fallback_chunk=first_noise_fallback_chunk,
             rollout_chunks=rollout_chunk,
             simulator_action_limit=int(TASK_ENV.step_lim),
             simulator_action_count=int(TASK_ENV.take_action_cnt),
@@ -937,8 +902,6 @@ def parse_args_and_config():
                         help="Cache the human demonstration in the transformer (default: 1)")
     parser.add_argument("--use_text", type=int, choices=[0, 1], default=0,
                         help="Use instruction text in BOTH target and human-context streams")
-    parser.add_argument("--use_guidance", type=int, choices=[0, 1], default=0,
-                        help="Enable DINO latent guidance (parameters configured on server)")
     parser.add_argument("--render_samples_per_pixel", type=int, default=None,
                         help="Ray tracing samples per pixel; default RENDER_SAMPLES_PER_PIXEL or 32")
     parser.add_argument("--profile_timing", type=int, choices=[0, 1], default=0)
@@ -986,5 +949,5 @@ if __name__ == "__main__":
         faulthandler.enable()
     usr_args = parse_args_and_config()
     configure_rendering(samples=usr_args.get("render_samples_per_pixel"))
-    Sapien_TEST()
+    RenderProbe()
     main(usr_args)
