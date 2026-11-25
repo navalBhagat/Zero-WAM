@@ -129,3 +129,19 @@ def test_teacher_fails_explicitly_if_cached_caption_is_missing(tmp_path):
     with pytest.raises(ValueError, match="requires cached text_emb"):
         OnlineSession(server, dict(prompt="", icl_video_path="", icl_latent_path="demo",
             noise_session=dict(method="oracle", directory=str(tmp_path), seed=1234)))
+
+
+def test_baselines_reuse_observed_history_cache(tmp_path, monkeypatch):
+    monkeypatch.setitem(sys.modules, "wan_va.modules.icl_model", SimpleNamespace(OBSERVATION_CACHE_TYPE=0))
+    for method in ("icl", "control"):
+        server = Server()
+        session = OnlineSession(server, dict(prompt="", icl_video_path="", icl_latent_path="demo",
+            noise_session=dict(method=method, directory=str(tmp_path / method), seed=1234)))
+        session.initial_frame = torch.zeros(1, 48, 1, 4, 4)
+        def unexpected_reset(**kwargs):
+            raise AssertionError("Baseline reset its already updated context")
+        server._reset = unexpected_reset
+        session.sample({})
+        session.observe(dict(video=torch.ones(1, 48, 2, 4, 4)))
+        session.sample({})
+        assert [call[1] for call in server.calls] == [0, 1]

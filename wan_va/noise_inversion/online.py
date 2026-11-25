@@ -112,7 +112,8 @@ class OnlineSession:
         target = None
         recovered = original
         if self.method in ("oracle", "icl"):
-            self.build_context(True)
+            if self.method == "oracle":
+                self.build_context(True)
             teacher_action = server._infer_icl(dict(observation, video_only=self.method == "oracle", initial_latent=self.initial_frame, video_noise=original, action_noise=action_noise))
             target = server.last_predicted_latents.detach().float()
             if not torch.isfinite(target).all():
@@ -121,8 +122,6 @@ class OnlineSession:
                 self.build_context(False)
                 recovered, error = self.reverse(target)
         if self.method != "icl":
-            if self.method != "oracle":
-                self.build_context(False)
             if self.method == "learned":
                 history, actions = self.context()
                 with torch.no_grad():

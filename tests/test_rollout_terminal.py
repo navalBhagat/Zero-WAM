@@ -11,18 +11,21 @@ def test_terminal_chunk_stops_and_skips_cache_update(success_at):
     tree = ast.parse(Path('evaluation/robotwin/eval_policy_client_openpi.py').read_text())
     loop = next(n for n in ast.walk(tree) if isinstance(n, ast.While)
                 and 'TASK_ENV.take_action_cnt' in ast.unparse(n.test))
+    from evaluation.robotwin.success import update_success
     calls = []
     env = SimpleNamespace(take_action_cnt=0, step_lim=100, eval_success=False)
     def take_action(action, action_type):
         env.take_action_cnt += 1
-        env.eval_success = env.take_action_cnt == success_at
+        # Success must be detected explicitly, not supplied by take_action.
+    env.check_success = lambda: env.take_action_cnt == success_at
     env.take_action = take_action
     env.get_obs = lambda: env.take_action_cnt
     def infer(payload):
         calls.append(payload)
         return {'action': np.zeros((14, 2, 4))}
     snapshots = []
-    scope = dict(TASK_ENV=env, first=False, first_obs=None, model=SimpleNamespace(infer=infer),
+    scope = dict(profile=SimpleNamespace(call=lambda label, fn, *args: fn(*args)),
+                 update_success=update_success, TASK_ENV=env, first=False, first_obs=None, model=SimpleNamespace(infer=infer),
                  diagnostic_call=lambda label, fn, *args, **kwargs: fn(*args, **kwargs),
                  prompt='test', save_visualization=False, video_guidance_scale=1,
                  action_guidance_scale=1, full_action_history=[], full_obs_list=[],

@@ -38,6 +38,7 @@ from evaluation.robotwin.profiling import EpisodeProfiler
 from evaluation.robotwin.render_probe import RenderProbe
 from evaluation.robotwin.rendering import configure_rendering, render_settings
 from evaluation.robotwin.run_metadata import create_run, record_episode
+from evaluation.robotwin.success import update_success
 from evaluation.robotwin.websocket_client_policy import WebsocketClientPolicy
 
 
@@ -707,7 +708,7 @@ def eval_policy(task_name,
             simulator_seed=int(now_seed), icl_seed=int(args["icl_seed"]),
             episode_offset=int(args.get("episode_offset", 0)),
             task_instruction=str(prompt), rendering=render_settings(),
-            stopping_policy="robotwin_eval_success_after_each_action_skip_terminal_cache",
+            stopping_policy="explicit_check_success_after_each_action_skip_terminal_cache",
             requested_conditioning=dict(method=noise_mode,
                 use_icl=(noise_mode == "icl") if noise_mode else args["use_icl"],
                 use_text=(noise_mode == "icl") if noise_mode else args["use_text"]),
@@ -812,6 +813,7 @@ def eval_policy(task_name,
                     else:
                         raise NotImplementedError
                     TASK_ENV.take_action(ee_action, action_type='ee')
+                    profile.call("success_check", update_success, TASK_ENV)
                    
                     if (j+1) % action_per_frame == 0 or TASK_ENV.eval_success:
                         obs = format_obs(TASK_ENV.get_obs(), prompt)

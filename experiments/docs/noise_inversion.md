@@ -18,6 +18,10 @@ The teacher still uses human-demo KV. Contexts are rebuilt for isolation rather
 than retaining two large GPU caches. The streaming VAE feature cache is preserved
 across switches so encoding the next observation does not restart the video.
 Rebuilding full contexts costs time; profile before optimizing cache reuse.
+Plain ICL, control and learned rollouts retain their updated observation cache
+between chunks. Only the oracle rebuilds contexts to switch teacher/student
+conditioning. The client explicitly checks and latches task success after each
+executed action, stopping before another action can undo a completed state.
 
 ICL, unconditioned control and oracle rollouts share scene slots and an episode-seeded
 Gaussian stream. Each chunk advances that stream in the original sampler’s order:
