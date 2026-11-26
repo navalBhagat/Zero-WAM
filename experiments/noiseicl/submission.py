@@ -3,6 +3,7 @@ import fcntl
 import os
 from pathlib import Path
 import subprocess
+import time
 
 from experiments.io import read_json
 from experiments.runtime.records import save_json
@@ -18,9 +19,66 @@ def active(identifier):
     return bool(result.stdout.strip())
 
 
-def submit(directory, limit=1, retry=False):
+def submit_array(directory, manifest, limit, retry, max_concurrent):
+    """Persist an immutable task map so retries cannot change queued array tasks."""
+    selected = []
+    for job in manifest["jobs"]:
+        if len(selected) >= limit:
+            break
+        if read_json(directory / "jobs" / job["name"] / "summary.json", {}).get("status") == "completed":
+            continue
+        attempts = job["submissions"]
+        if any(a.get("status") == "submitting" for a in attempts):
+            raise ValueError("Interrupted submission: reconcile with squeue before retry")
+        if attempts and (not retry or any(active(a["job_id"]) for a in attempts if a.get("job_id"))):
+            continue
+        if job.get("depends_on"):
+            raise ValueError("Array submission supports independent jobs only")
+        selected.append(job)
+    if not selected:
+        return []
+    root = directory / "arrays" / str(time.time_ns())
+    root.mkdir(parents=True)
+    mapping = root / "jobs.json"
+    save_json(mapping, [job["name"] for job in selected])
+    settings = manifest["settings"]
+    command = ["sbatch", "--parsable", "--export=ALL", f"--chdir={ROOT}",
+               f"--time={round(settings['hours'] * 60)}",
+               f"--array=0-{len(selected) - 1}%{max_concurrent}",
+               f"--output={root}/slurm_%A_%a.out", "--job-name=noiseicl_array",
+               str(ROOT / "experiments/jobs" / settings["cluster"] / "noiseicl.sbatch")]
+    environment = {key: value for key, value in os.environ.items()
+                   if not key.startswith(("NOISE_", "GUIDANCE_"))}
+    environment.update(ZERO_WAM_ROOT=str(ROOT), NOISE_CAMPAIGN=str(directory),
+                       NOISE_ARRAY_MAP=str(mapping), EXPERIMENT_SOURCE_DIGEST=manifest["source_digest"])
+    attempts = []
+    for index, job in enumerate(selected):
+        attempt = dict(status="submitting", command=command, array_index=index, array_map=str(mapping))
+        job["submissions"].append(attempt)
+        attempts.append(attempt)
+    path = directory / "manifest.json"
+    save_json(path, manifest)
+    try:
+        identifier = subprocess.check_output(command, env=environment, text=True).strip().split(";")[0]
+    except (OSError, subprocess.CalledProcessError) as error:
+        for attempt in attempts:
+            attempt.update(status="submission_failed", error=str(error))
+        save_json(path, manifest)
+        raise
+    identifiers = []
+    for index, attempt in enumerate(attempts):
+        task_id = f"{identifier}_{index}"
+        attempt.update(status="submitted", job_id=task_id)
+        identifiers.append(task_id)
+    save_json(path, manifest)
+    return identifiers
+
+
+def submit(directory, limit=1, retry=False, max_concurrent=None):
     if limit < 1:
         raise ValueError("Submission limit must be positive")
+    if max_concurrent is not None and max_concurrent < 1:
+        raise ValueError("Concurrency limit must be positive")
     directory = Path(directory).resolve()
     with (directory / ".submission.lock").open("w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -28,6 +86,8 @@ def submit(directory, limit=1, retry=False):
         manifest = read_json(path)
         if fingerprint()[0] != manifest["source_digest"]:
             raise ValueError("Code changed since planning; create a fresh campaign")
+        if max_concurrent is not None:
+            return submit_array(directory, manifest, limit, retry, max_concurrent)
         identifiers = []
         for job in manifest["jobs"]:
             if len(identifiers) >= limit:

@@ -4,6 +4,13 @@ See [campaign commands](../README.md) for the five stages. Plan on the cluster
 where execution will occur so absolute data/output paths resolve correctly.
 Use a new campaign directory after code changes. Plan creation does not submit.
 
+For independent jobs, `submit --limit 100 --max-concurrent 5` submits one Slurm
+array with at most five running tasks. Each task requests one GPU. This limit
+applies to that array, not other submissions. Array logs are in
+`arrays/<submission>/slurm_<array-id>_<task-index>.out`; trial outputs retain their
+usual paths. Retry submissions use a new immutable task map and skip completed
+jobs. Jobs with training dependencies use the regular submission mode.
+
 Jobs are independent except stage-5 evaluation, which depends on training.
 Inspect Slurm state before retrying; do not run two workers against the same
 trial. Failed policy execution is a completed episode, whereas setup, renderer,

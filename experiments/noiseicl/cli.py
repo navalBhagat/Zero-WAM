@@ -34,6 +34,7 @@ def main():
     s.add_argument("--directory", type=Path, required=True)
     s.add_argument("--limit", type=int, default=1)
     s.add_argument("--retry", action="store_true")
+    s.add_argument("--max-concurrent", type=int, help="Submit an array with at most this many GPU jobs running")
     r = commands.add_parser("run")
     r.add_argument("--directory", type=Path, required=True)
     r.add_argument("--job", required=True)
@@ -60,7 +61,7 @@ def main():
         elif args.command == "submit":
             if args.limit < 1:
                 raise ValueError("--limit must be positive")
-            print(json.dumps(submit(args.directory, args.limit, args.retry)))
+            print(json.dumps(submit(args.directory, args.limit, args.retry, args.max_concurrent)))
         elif args.command == "run":
             from .execution import execute
             execute(args.directory, args.job)

@@ -3,10 +3,14 @@
 set -eo pipefail
 : "${ZERO_WAM_ROOT:?Set the repository root}"
 : "${NOISE_CAMPAIGN:?Submit a planned NoiseICL campaign}"
-: "${NOISE_JOB:?Missing campaign job name}"
 case "${EXPERIMENT_CLUSTER:-}" in das6|snellius) ;; *) echo "Unknown cluster" >&2; exit 1 ;; esac
 source "$ZERO_WAM_ROOT/experiments/scripts/clusters/$EXPERIMENT_CLUSTER.sh"
 activate_experiment_environment robotwin
+if [[ -n "${NOISE_ARRAY_MAP:-}" ]]; then
+    NOISE_JOB=$(python -c 'import json,os; print(json.load(open(os.environ["NOISE_ARRAY_MAP"]))[int(os.environ["SLURM_ARRAY_TASK_ID"])])')
+    export NOISE_JOB
+fi
+: "${NOISE_JOB:?Missing campaign job name}"
 cd "$ZERO_WAM_ROOT"
 export PYTHONPATH="$ZERO_WAM_ROOT:$ROBOTWIN_ROOT:${PYTHONPATH:-}"
 python experiments/scripts/provenance.py --verify "$EXPERIMENT_SOURCE_DIGEST"

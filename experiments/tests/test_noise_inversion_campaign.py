@@ -62,3 +62,23 @@ def test_unseen_tasks_cannot_enter_context_index(tmp_path):
     source.write_text(json.dumps(row))
     with pytest.raises(ValueError, match="Unseen task"):
         index_contexts(source, tmp_path / "index", task_limit=1)
+
+
+def test_array_submission_is_throttled_and_retries_keep_task_mapping(tmp_path):
+    directory = tmp_path / "signal"
+    directory.mkdir()
+    jobs = [dict(name=f"task_{i}", submissions=[], depends_on=None) for i in range(7)]
+    save_json(directory / "manifest.json", dict(source_digest="digest",
+        settings=dict(cluster="das6", hours=3), jobs=jobs))
+    with patch("experiments.noiseicl.submission.fingerprint", return_value=("digest", {})), \
+         patch("experiments.noiseicl.submission.subprocess.check_output", side_effect=["123", "124"]) as sbatch:
+        assert submit(directory, limit=7, max_concurrent=5) == [f"123_{i}" for i in range(7)]
+        assert "--array=0-6%5" in sbatch.call_args.args[0]
+        mapping = Path(sbatch.call_args.kwargs["env"]["NOISE_ARRAY_MAP"])
+        assert json.loads(mapping.read_text()) == [f"task_{i}" for i in range(7)]
+        assert submit(directory, limit=7, max_concurrent=5) == []
+        save_json(directory / "jobs/task_0/summary.json", dict(status="completed"))
+        with patch("experiments.noiseicl.submission.active", return_value=False):
+            assert submit(directory, limit=7, retry=True, max_concurrent=5) == [f"124_{i}" for i in range(6)]
+        assert json.loads(mapping.read_text()) == [f"task_{i}" for i in range(7)]
+        assert "--array=0-5%5" in sbatch.call_args.args[0]
