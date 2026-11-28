@@ -6,6 +6,45 @@ import os
 from pathlib import Path
 import runpy
 import shutil
+import threading
+import time
+
+
+def download_with_status(download, *, sizes, **kwargs):
+    """Report durable file progress even when Hub progress bars are suppressed."""
+    destination = Path(kwargs["local_dir"])
+    stopped = threading.Event()
+    started = time.monotonic()
+
+    def status():
+        complete = 0
+        stored = 0
+        for name, expected in sizes.items():
+            try:
+                actual = (destination / name).stat().st_size
+            except FileNotFoundError:
+                continue
+            complete += actual == expected
+            stored += min(actual, expected)
+        print(f"[download {time.monotonic() - started:.0f}s] "
+              f"{complete}/{len(sizes)} selected files present at expected size; "
+              f"{stored / GIB:.3f}/{sum(sizes.values()) / GIB:.3f} GiB in destination. "
+              "Temporary transfers/Hub metadata requests are not counted.", flush=True)
+
+    def heartbeat():
+        while not stopped.wait(15):
+            status()
+
+    print("Starting Hugging Face download (may first fetch metadata or wait for cache locks).", flush=True)
+    status()
+    worker = threading.Thread(target=heartbeat, daemon=True)
+    worker.start()
+    try:
+        return download(**kwargs)
+    finally:
+        stopped.set()
+        worker.join()
+        status()
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 MODEL_REPO = "robbyant-research/zero-wam-posttrain-robotwin"
@@ -183,8 +222,8 @@ def main():
         temporary = manifest_path.with_suffix(".tmp")
         temporary.write_text(json.dumps(manifest, indent=2) + "\n")
         temporary.replace(manifest_path)
-        snapshot_download(repo_id=repo, repo_type=repo_type, revision=sha,
-                          local_dir=str(destination), allow_patterns=names, max_workers=args.workers)
+        download_with_status(snapshot_download, sizes=sizes, repo_id=repo, repo_type=repo_type, revision=sha,
+                             local_dir=str(destination), allow_patterns=names, max_workers=args.workers)
         bad = [name for name, size in sizes.items()
                if not (destination / name).is_file() or (destination / name).stat().st_size != size]
         if bad:
