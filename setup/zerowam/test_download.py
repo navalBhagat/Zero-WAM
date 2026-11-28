@@ -6,13 +6,13 @@ import sys
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from download import additional_bytes, evaluation_files, link_destination, select_files, main
+from download import additional_bytes, evaluation_files, reference_files, link_destination, select_files, main
 
 
 class DownloadTests(unittest.TestCase):
     def test_eval_only_selects_fixed_references(self):
         refs = evaluation_files()
-        self.assertEqual(len(refs), 14)
+        self.assertEqual(len(refs), 7 * 20 * 2)
         names = refs + ["icl_configs/ICL_config_robotwin.json", "robotwin_data/task/latents/x.pth",
                         "human_latents/robotwin/unneeded.pth", "agibot_data/data.tar.zst"]
         selected = select_files(names, "dataset", "eval")
@@ -25,6 +25,24 @@ class DownloadTests(unittest.TestCase):
     def test_robotwin_profile_excludes_external_data(self):
         names = ["robotwin_data/task/latents/x.pth", "human_data/robotwin/a.mp4", "agibot_data/a"]
         self.assertEqual(select_files(names, "dataset", "robotwin"), sorted(names[:2]))
+
+    def test_seen_task_download_is_separate_from_eval(self):
+        refs = reference_files(seen=True, tasks=["adjust_bottle"])
+        self.assertEqual(len(refs), 40)
+        robot = "robotwin_data/adjust_bottle-demo_clean_collect_200-1000/data/chunk-000/episode_000001.parquet"
+        meta = "robotwin_data/meta/action_stats.json"
+        other = "robotwin_data/open_microwave-demo_clean_collect_200-1000/data/episode.parquet"
+        names = refs + [robot, meta, other, "icl_configs/ICL_config_robotwin.json"]
+        video = "robotwin_data/adjust_bottle-demo_clean_collect_200-1000/videos/chunk-000/observation.images.cam_high/episode_000001.mp4"
+        selected = select_files(names + [video], "dataset", "seen", ["adjust_bottle"])
+        self.assertEqual(set(selected), {n for n in names if n != other and not n.endswith(".mp4")})
+        with self.assertRaises(ValueError, msg="Held-out tasks must not enter seen downloads"):
+            reference_files(seen=True, tasks=["open_microwave"])
+        with self.assertRaises(RuntimeError):
+            select_files(refs, "dataset", "seen", ["adjust_bottle"])
+
+    def test_all_seen_references(self):
+        self.assertEqual(len(reference_files(seen=True)), 854 * 2)
 
     def test_completed_files_are_not_budgeted_twice(self):
         with tempfile.TemporaryDirectory() as directory:

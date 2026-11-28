@@ -119,7 +119,9 @@ bash setup/zerowam/download.sh all --storage-root "$STORAGE_ROOT" \
 | Option | Purpose |
 | --- | --- |
 | `checkpoint`, `dataset`, or `all` | Select what to fetch |
-| `--profile eval` (default) | Seven required human VAE latents, available reference MP4s, and ICL manifests |
+| `--profile eval` (default) | 20 human VAE latents per held-out task (140 total), available reference MP4s, and ICL manifests |
+| `--profile seen` | Separate collection download: human references and recorded robot files for the 43 seen tasks |
+| `--profile seen --tasks TASK ...` | Limit the seen download to named tasks, e.g. the five-task pilot |
 | `--profile robotwin` | Full simulation subset, including recorded robot videos/actions/latents |
 | `--workers 1` | Reduce request concurrency; default is 2 |
 | `--link` | Create repository paths expected by inference; refuse conflicting existing paths |

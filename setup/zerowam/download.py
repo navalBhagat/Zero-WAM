@@ -13,10 +13,15 @@ DATA_REPO = "Robbyant-Research/HumanGen"
 GIB = 1024 ** 3
 
 
-def evaluation_files():
+def reference_files(seen=False, tasks=None):
     mapping = runpy.run_path(str(
         PROJECT_ROOT / "evaluation/robotwin/robotwin_icl_human_videos.py"
-    ))["ROBOTWIN_ICL_HUMAN_VIDEOS"]
+    ))["ROBOTWIN_ICL_SEEN_HUMAN_VIDEOS" if seen else "ROBOTWIN_ICL_UNSEEN_HUMAN_VIDEOS"]
+    if tasks:
+        unknown = set(tasks) - set(mapping)
+        if unknown:
+            raise ValueError(f"Not seen RoboTwin tasks: {sorted(unknown)}")
+        mapping = {task: mapping[task] for task in tasks}
     root = PROJECT_ROOT / "data/HumanGen"
     files = []
     for videos in mapping.values():
@@ -28,22 +33,41 @@ def evaluation_files():
     return sorted(set(files))
 
 
-def select_files(names, component, profile):
+def evaluation_files():
+    return reference_files()
+
+
+def select_files(names, component, profile, tasks=None):
     if component == "checkpoint":
         return sorted(names)
-    if profile == "eval":
-        references = set(evaluation_files())
+    if profile in ("eval", "seen"):
+        references = set(reference_files(seen=profile == "seen", tasks=tasks))
         required = {n for n in references if n.startswith("human_latents/")}
         missing = required - set(names)
         if missing:
-            raise RuntimeError(f"Expected evaluation references missing from Hub: {sorted(missing)}")
+            raise RuntimeError(f"Expected {profile} references missing from Hub: {sorted(missing)}")
         optional = references - required
         unavailable = optional - set(names)
-        if unavailable:
+        if unavailable and profile == "eval":
             print(f"Note: {len(unavailable)} reference MP4s unavailable; using required latents. "
                   "Use GUIDANCE_REFERENCE_SOURCE=latent or reconstruct videos from latents.")
-        return sorted(required | (optional & set(names)) |
-                      {n for n in names if fnmatchcase(n, "icl_configs/*")})
+        selected = required | {n for n in names if fnmatchcase(n, "icl_configs/*")}
+        if profile == "eval":
+            selected |= optional & set(names)
+        if profile == "seen":
+            mapping = runpy.run_path(str(PROJECT_ROOT / "evaluation/robotwin/robotwin_icl_human_videos.py"))[
+                "ROBOTWIN_ICL_SEEN_HUMAN_VIDEOS"]
+            chosen = set(tasks or mapping)
+            robot_files = {n for n in names if n.startswith("robotwin_data/") and
+                           len(Path(n).parts) > 2 and Path(n).parts[1].split("-")[0] in chosen
+                           and Path(n).parts[2] in ("latents", "data", "meta")
+                           and Path(n).suffix.lower() not in (".mp4", ".avi", ".webm", ".mov", ".mkv")}
+            for task in chosen:
+                if not any(Path(n).parts[1].split("-")[0] == task for n in robot_files):
+                    raise RuntimeError(f"No recorded robot files found for seen task: {task}")
+            selected |= robot_files
+            selected |= {n for n in names if n.startswith("robotwin_data/meta/")}
+        return sorted(selected)
     patterns = ("icl_configs/*", "robotwin_data/**",
                 "human_latents/robotwin/**", "human_data/robotwin/**")
     return sorted(n for n in names if any(fnmatchcase(n, p) for p in patterns))
@@ -75,8 +99,9 @@ def main():
     parser.add_argument("component", choices=("checkpoint", "dataset", "all"))
     parser.add_argument("--storage-root", type=Path, required=True,
                         help="Explicit external storage path; never defaults to home")
-    parser.add_argument("--profile", choices=("eval", "robotwin"), default="eval",
-                        help="eval: fixed seven human references; robotwin: full simulation subset")
+    parser.add_argument("--profile", choices=("eval", "seen", "robotwin"), default="eval",
+                        help="eval: held-out human references; seen: 43 training tasks; robotwin: full subset")
+    parser.add_argument("--tasks", nargs="+", help="With --profile seen: download only these seen tasks")
     parser.add_argument("--download", action="store_true", help="Default is metadata-only planning")
     parser.add_argument("--quota-free-gib", type=float,
                         help="Your currently remaining personal quota on this filesystem, in GiB")
@@ -85,6 +110,8 @@ def main():
     parser.add_argument("--checkpoint-revision", default="main")
     parser.add_argument("--dataset-revision", default="main")
     args = parser.parse_args()
+    if args.tasks and (args.profile != "seen" or args.component == "checkpoint"):
+        parser.error("--tasks requires a dataset download with --profile seen")
     if args.workers < 1:
         parser.error("--workers must be positive")
     if args.download and (args.quota_free_gib is None or args.quota_free_gib < 0):
@@ -119,7 +146,7 @@ def main():
             raise RuntimeError("Revision differs from saved manifest. Use a new storage root for a new revision.")
         info = api.repo_info(repo, repo_type=repo_type, revision=revision, files_metadata=True)
         sizes = {s.rfilename: s.size for s in info.siblings}
-        names = select_files(sizes, component, args.profile)
+        names = select_files(sizes, component, args.profile, args.tasks)
         if not names:
             raise RuntimeError(f"Empty download selection for {component}")
         destination = root / ("zero-wam-posttrain-robotwin" if component == "checkpoint" else "HumanGen")
@@ -151,6 +178,7 @@ def main():
     for component, repo, repo_type, sha, destination, names, sizes, _, requested in plans:
         manifest[component] = dict(repo=repo, revision=sha, requested_revision=requested,
                                    profile=args.profile if component == "dataset" else None,
+                                   tasks=args.tasks if component == "dataset" else None,
                                    files=names, complete=False)
         temporary = manifest_path.with_suffix(".tmp")
         temporary.write_text(json.dumps(manifest, indent=2) + "\n")

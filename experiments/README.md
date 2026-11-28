@@ -49,6 +49,41 @@ submission concurrency. A 20-scene signal campaign plans 140 jobs / 420 rollouts
 
 ## Recorded data
 
+For the research-plan pilot, prepare exactly 2,000 pairs from recorded histories:
+
+```bash
+python experiments/scripts/prepare_noiseicl_pilot.py \
+  --trajectories /data/seen_trajectories.jsonl --cluster snellius
+python experiments/scripts/noiseicl.py submit \
+  --directory experiments/stages/04_collect_pilot --limit 1
+# After checking the first job, submit the remaining 79 jobs:
+python experiments/scripts/noiseicl.py submit \
+  --directory experiments/stages/04_collect_pilot --limit 79 --max-concurrent 2
+```
+
+Use `--cluster das6` on DAS6. Default seen tasks are `adjust_bottle`,
+`beat_block_hammer`, `blocks_ranking_rgb`, `blocks_ranking_size`, and
+`click_alarmclock`; override with `--tasks` followed by five seen task names.
+The preparer requires 20 distinct paired human demonstrations and robot
+trajectories per task, each with at least ten chunks. It freezes a selected
+trajectory manifest, creates grouped splits, and plans 80 jobs of 25 pairs.
+It does not submit jobs. Run preparation on the target cluster so absolute
+asset paths are accessible there. Missing recorded assets must be prepared
+first; the published HumanGen pairing JSON alone is not a history manifest.
+
+The ICL mapping in `evaluation/robotwin/robotwin_icl_human_videos.py` covers all
+50 tasks, with separate `ROBOTWIN_ICL_SEEN_HUMAN_VIDEOS` (43 tasks) and
+`ROBOTWIN_ICL_UNSEEN_HUMAN_VIDEOS` (seven tasks) dictionaries and a combined
+`ROBOTWIN_ICL_HUMAN_VIDEOS` dictionary used by evaluation. All five default pilot
+tasks have 20 distinct references. Six seen tasks have only 19 distinct references
+in the published pairing index: `grab_roller`, `lift_pot`, `place_a2b_left`,
+`put_bottles_dustbin`, `rotate_qrcode`, and `stack_bowls_two`. The mapping retains
+all available references for those tasks rather than duplicating one.
+One reference is selected per episode. The `eval` download profile remains scoped
+to the seven held-out tasks; use `robotwin` for seen-task assets.
+Refresh the `eval` download profile on clusters
+that previously downloaded only one reference per task.
+
 The collection stages do not generate fake histories or train on unseen tasks.
 Download/prepare seen-task robot trajectories with normalized actions and frozen
 Wan VAE observations. `noiseicl.py schema` prints the required JSONL record:
