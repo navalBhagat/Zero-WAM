@@ -79,12 +79,12 @@ class DownloadTests(unittest.TestCase):
                     revisions.append(kwargs["revision"])
                     return SimpleNamespace(sha="fixed-commit", siblings=[
                         SimpleNamespace(rfilename="config.json", size=3)])
-            def snapshot(**kwargs):
+            def download_file(**kwargs):
                 transfers.append(kwargs)
                 destination = Path(kwargs["local_dir"])
                 destination.mkdir(exist_ok=True)
-                (destination / "config.json").write_bytes(b"abc")
-            fake = SimpleNamespace(HfApi=API, snapshot_download=snapshot)
+                (destination / kwargs["filename"]).write_bytes(b"abc")
+            fake = SimpleNamespace(HfApi=API, hf_hub_download=download_file)
             argv = ["download.py", "checkpoint", "--storage-root", directory]
             with patch.dict(sys.modules, {"huggingface_hub": fake}), patch.dict("os.environ"):
                 with patch.object(sys, "argv", argv):
@@ -100,6 +100,8 @@ class DownloadTests(unittest.TestCase):
                     main()
             self.assertEqual(revisions[-1], "fixed-commit")
             self.assertEqual(len(transfers), 1)
+            self.assertEqual(transfers[0]["filename"], "config.json")
+            self.assertEqual(transfers[0]["revision"], "fixed-commit")
 
 
 if __name__ == "__main__":

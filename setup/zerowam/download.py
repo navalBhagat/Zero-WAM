@@ -8,6 +8,23 @@ import runpy
 import shutil
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+
+def download_selected_files(download_file, *, repo_id, repo_type, revision, local_dir,
+                            allow_patterns, max_workers):
+    """Use the already resolved file list instead of enumerating the repo again."""
+    def fetch(name):
+        return download_file(repo_id=repo_id, repo_type=repo_type, revision=revision,
+                             local_dir=local_dir, filename=name)
+
+    print(f"Downloading {len(allow_patterns)} explicitly selected files; "
+          "skipping snapshot repository enumeration.", flush=True)
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        pending = {executor.submit(fetch, name): name for name in allow_patterns}
+        for count, future in enumerate(as_completed(pending), 1):
+            future.result()
+            print(f"[file {count}/{len(pending)}] Ready: {pending[future]}", flush=True)
 
 
 def download_with_status(download, *, sizes, **kwargs):
@@ -161,7 +178,7 @@ def main():
     root = args.storage_root.expanduser().resolve()
     # Redirect potentially large Xet chunks without relocating login credentials.
     os.environ.setdefault("HF_XET_CACHE", str(root / ".xet-cache"))
-    from huggingface_hub import HfApi, snapshot_download
+    from huggingface_hub import HfApi, hf_hub_download
     api = HfApi()
     # Use saved hf auth login credentials (or HF_TOKEN); do not print tokens.
     try:
@@ -222,7 +239,8 @@ def main():
         temporary = manifest_path.with_suffix(".tmp")
         temporary.write_text(json.dumps(manifest, indent=2) + "\n")
         temporary.replace(manifest_path)
-        download_with_status(snapshot_download, sizes=sizes, repo_id=repo, repo_type=repo_type, revision=sha,
+        download_with_status(lambda **kwargs: download_selected_files(hf_hub_download, **kwargs),
+                             sizes=sizes, repo_id=repo, repo_type=repo_type, revision=sha,
                              local_dir=str(destination), allow_patterns=names, max_workers=args.workers)
         bad = [name for name, size in sizes.items()
                if not (destination / name).is_file() or (destination / name).stat().st_size != size]
