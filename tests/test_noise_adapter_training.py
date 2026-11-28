@@ -1,8 +1,8 @@
 """Small CPU training run checks validation selection and resumability."""
 from pathlib import Path
 import torch
-from experiments.runtime.records import save_json
-from experiments.noiseicl.training import train
+from wan_va.noise_inversion.records import save_json
+from wan_va.noise_inversion.training import train
 from wan_va.noise_inversion.adapter import load_adapter
 def test_training_checkpoint_restores_model_optimizer_and_rng(tmp_path):
  root=tmp_path;dataset=root/'dataset';out=root/'train';out.mkdir()

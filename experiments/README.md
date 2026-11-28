@@ -9,7 +9,7 @@ cluster adapter. Install prerequisites are in [INSTALL.md](../INSTALL.md).
 | 1 smoke | Seven unseen tasks, one scene each, ICL/control/online oracle | Model, RoboTwin assets, seven human references |
 | 2 signal | Twenty distinct scene slots per unseen task | Same as stage 1 |
 | 3 benchmark | First 100 noise pairs | Grouped seen-task context index |
-| 4 collect | All pairs; 2000 for the five-task pilot | Same grouped context index |
+| 4 collect | All pairs; up to 2000 for the budgeted five-task pilot | Same grouped context index |
 | 5 train_evaluate | Residual adapter, seen/unseen rollouts, shuffled-demo ablation | Completed collection campaign |
 
 ```bash
@@ -49,27 +49,62 @@ submission concurrency. A 20-scene signal campaign plans 140 jobs / 420 rollouts
 
 ## Recorded data
 
-For the research-plan pilot, prepare exactly 2,000 pairs from recorded histories:
+For the DAS6 pilot, convert the downloaded source data and plan collection:
 
 ```bash
-python experiments/scripts/prepare_noiseicl_pilot.py \
-  --trajectories /data/seen_trajectories.jsonl --cluster snellius
+source "$HOME/nbhagat-workspace-env.sh"
+conda activate zerowam
+cd "$ZERO_WAM_ROOT"
+python -m pip install pyarrow  # also listed in requirements.inference.txt
+python -u experiments/scripts/prepare_noiseicl_pilot.py \
+  --humangen-root "$ZERO_WAM_ROOT/data/HumanGen" --cluster das6
+cat experiments/stages/04_collect_pilot/pilot.json
 python experiments/scripts/noiseicl.py submit \
   --directory experiments/stages/04_collect_pilot --limit 1
-# After checking the first job, submit the remaining 79 jobs:
+# After checking the first job, submit eligible remaining jobs:
 python experiments/scripts/noiseicl.py submit \
-  --directory experiments/stages/04_collect_pilot --limit 79 --max-concurrent 2
+  --directory experiments/stages/04_collect_pilot --limit 80 --max-concurrent 2
 ```
 
-Use `--cluster das6` on DAS6. Default seen tasks are `adjust_bottle`,
-`beat_block_hammer`, `blocks_ranking_rgb`, `blocks_ranking_size`, and
-`click_alarmclock`; override with `--tasks` followed by five seen task names.
-The preparer requires 20 distinct paired human demonstrations and robot
-trajectories per task, each with at least ten chunks. It freezes a selected
-trajectory manifest, creates grouped splits, and plans 80 jobs of 25 pairs.
-It does not submit jobs. Run preparation on the target cluster so absolute
-asset paths are accessible there. Missing recorded assets must be prepared
-first; the published HumanGen pairing JSON alone is not a history manifest.
+Collection runs the frozen model against recorded histories in `zerowam`; no
+live RoboTwin simulator is started or patched. Use a permitted DAS6 GPU window.
+Each job contains at most 25 pairs. The actual pair/job counts are in `pilot.json`.
+No jobs are submitted by the preparer. Do not change source code after planning;
+submission verifies the frozen source digest.
+
+Default seen tasks are `adjust_bottle`, `beat_block_hammer`, `blocks_ranking_rgb`,
+`blocks_ranking_size`, and `click_alarmclock`; override with `--tasks` followed by
+five seen task names. The preparer requires 20 distinct paired human demos per
+task and uses all downloaded paired robot intervals. It selects up to 200
+contexts per task, balancing demos and recordings and covering early/late points,
+then derives two distinct Gaussian seeds per context. Short recordings are not
+padded, repeated, or rejected for having fewer than ten points. The dataset can
+therefore contain fewer than 2,000 pairs; task shortfalls are explicitly recorded.
+
+The converter checks three-camera layouts/frame IDs and recorded actions. It
+reuses the training action preprocessing and checkpoint normalization statistics.
+Reusable conversion code lives in `wan_va/noise_inversion/humangen.py`, alongside
+the collection runtime in `wan_va/noise_inversion/collection.py`. Reusable context
+indexing, sampling, and split grouping live in `wan_va/noise_inversion/dataset.py`;
+`experiments/` contains command entry points, campaign settings, and Slurm orchestration.
+Residual adapter training lives in `wan_va/noise_inversion/training.py`; experiment
+runners call that implementation rather than defining model training themselves.
+Initial observations and complete two-frame histories are written once and shared
+by both seeds. The first history includes the initial observation and its zero
+action slot. At least one recorded latent remains beyond each history boundary.
+An unpaired interval, missing camera, or incompatible sampling layout fails
+preparation. This validates storage/alignment; the first GPU job must still verify
+model execution and reconstruction diagnostics.
+
+HumanGen episode IDs group intervals from the same recording. Shared demo files
+also stay in one split. Simulator seeds and cross-episode scene identities are
+not supplied by these inputs: the converter records `simulator_seed: null` rather
+than inventing a seed. Stage-5 seen-scene evaluation needs verified simulator
+metadata and refuses to interpret episode indices as simulator seeds.
+
+Use fresh output directories for reruns, or reuse a completed conversion with
+`--trajectories experiments/datasets/seen_pilot_histories/trajectories.jsonl` and
+fresh `--output` / `--directory` values. Do not delete a dataset referenced by jobs.
 
 The ICL mapping in `evaluation/robotwin/robotwin_icl_human_videos.py` covers all
 50 tasks, with separate `ROBOTWIN_ICL_SEEN_HUMAN_VIDEOS` (43 tasks) and
@@ -80,7 +115,7 @@ in the published pairing index: `grab_roller`, `lift_pot`, `place_a2b_left`,
 `put_bottles_dustbin`, `rotate_qrcode`, and `stack_bowls_two`. The mapping retains
 all available references for those tasks rather than duplicating one.
 One reference is selected per episode. The `eval` download profile remains scoped
-to the seven held-out tasks; use `robotwin` for seen-task assets.
+to the seven held-out tasks; use `seen` for latent/action-only seen-task assets.
 Refresh the `eval` download profile on clusters
 that previously downloaded only one reference per task.
 
@@ -99,7 +134,8 @@ python experiments/scripts/noiseicl.py index --trajectories seen_trajectories.js
 This chooses up to ten history points per trajectory and assigns scene/demo groups
 to train/validation/test before deriving two reproducible, distinct Gaussian seeds per point. Seeds also
 vary across contexts; collection does not reuse only two Gaussian tensors. A full five-task,
-20-trajectory pilot has 1000 contexts / 2000 pairs. Shared scenes, simulator seeds,
+20-trajectory pilot would have 1000 contexts / 2000 pairs only when every trajectory
+has ten valid points. The budgeted pilot above handles shorter trajectories. Shared scenes, simulator seeds,
 demo IDs or demo files cannot cross splits. Actual grouped split sizes are recorded;
 they may differ from nominal 70/15/15. The seven unseen tasks are rejected.
 

@@ -162,6 +162,43 @@ The template defaults to 15 minutes; transfers may need longer. Optional emails:
 Saved login credentials must be visible to the job; changing `HF_HOME` can hide
 those credentials. Downloads default Xet chunk caching to the storage root.
 
+### Prepare the recorded-history collection pilot on DAS6
+
+After downloading the five seen tasks, prepare the histories and campaign in the
+existing `zerowam` environment:
+
+```bash
+python -u experiments/scripts/prepare_noiseicl_pilot.py \
+  --cluster das6 --humangen-root "$ZERO_WAM_ROOT/data/HumanGen"
+cat experiments/stages/04_collect_pilot/pilot.json
+python experiments/scripts/noiseicl.py submit \
+  --directory experiments/stages/04_collect_pilot --limit 1
+```
+
+The converter reads cached human/robot latents and recorded actions, checks camera
+timing/layout, and applies training action normalization. It keeps 20 human demos
+per task and uses their published robot pairings to select up to 200 distinct
+history points per task. Two seeds per point give at most 2,000 pairs; shorter
+tasks produce fewer pairs. Actual counts and shortfalls are in `pilot.json`.
+It creates the histories, context index, source snapshot, and job manifests.
+Use fresh output directories if preparing a new campaign.
+
+Collection runs model inference on a GPU but does not start a live simulator;
+the simulator camera checks below apply to live evaluation. After checking the
+first job's timings and reconstruction diagnostics, submit remaining eligible
+jobs in a permitted DAS6 GPU window:
+
+```bash
+python experiments/scripts/noiseicl.py report \
+  --directory experiments/stages/04_collect_pilot
+python experiments/scripts/noiseicl.py submit \
+  --directory experiments/stages/04_collect_pilot --limit 80 --max-concurrent 2
+```
+
+See [experiments/README.md](experiments/README.md) for grouping rules, output paths,
+and limitations of the released simulator/scene metadata. Do not change source
+code after planning: submission checks its frozen digest.
+
 ## 5. Verify GPU execution and task cameras
 
 Inside an allocated GPU node:
@@ -236,7 +273,7 @@ site arrangement; the 15-minute daytime template cannot cover full paired trials
 | 1 | One full matched comparison on each of seven unseen tasks | None beyond installed assets/model/human references |
 | 2 | Twenty distinct scene slots per unseen task | Override with --scenes if needed |
 | 3 | First 100 fixed-history noise pairs as a collection benchmark | --contexts /path/to/index.json |
-| 4 | Full grouped dataset collection; default pilot is 2000 pairs | --contexts /path/to/index.json |
+| 4 | Full grouped dataset collection; budgeted pilot targets up to 2000 pairs | --contexts /path/to/index.json |
 | 5 | Residual adapter training, seen/unseen evaluation and shuffled-demo control | --dataset /path/to/stage4 |
 
 All stages use `noiseicl.py plan --stage N --directory PATH`. Stage 5 submits

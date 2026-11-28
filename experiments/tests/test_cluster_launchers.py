@@ -53,5 +53,7 @@ def test_source_snapshot_covers_new_runtime_and_cluster_jobs():
     recorded = {str(path.relative_to(ROOT)) for path in files()}
     assert "experiments/jobs/das6/noiseicl.sbatch" in recorded
     assert "experiments/scripts/run_evaluation.sh" in recorded
-    assert "experiments/noiseicl/training.py" in recorded
+    assert "wan_va/noise_inversion/training.py" in recorded
+    assert "wan_va/noise_inversion/dataset.py" in recorded
+    assert "wan_va/noise_inversion/humangen.py" in recorded
     assert "wan_va/noise_inversion/online.py" in recorded

@@ -1,10 +1,11 @@
 """Grouped trajectory indexing; seeds/chunks can never cross split boundaries."""
 import hashlib
 import json
+from collections import defaultdict, deque
 from pathlib import Path
 
-from experiments.runtime.records import save_json
-from .config import UNSEEN_TASKS
+from .records import save_json
+from .tasks import UNSEEN_TASKS
 
 
 def read_lines(path):
@@ -19,9 +20,54 @@ def gaussian_seed(context_id, base_seed, replica):
     return int(stable_id(context_id, base_seed, replica)[:16], 16) & ((1 << 63) - 1)
 
 
-def index_contexts(manifest, output, points=10, task_limit=5, trajectories_per_task=20):
+def balanced_points(rows, points, task_budget):
+    """Round-robin demos, then trajectories, then time; never repeat a point."""
+    demos = defaultdict(list)
+    for row in sorted(rows, key=lambda r: str(r["trajectory_id"])):
+        count = int(row["chunk_count"])
+        indices = sorted({round(i * (count - 1) / max(1, min(points, count) - 1))
+                          for i in range(min(points, count))})
+        # Under a budget, visit both ends and then fill the largest temporal gap
+        # rather than concentrating all selected contexts near the beginning.
+        temporal = []
+        if indices:
+            temporal.append(indices.pop(0))
+        if indices:
+            temporal.append(indices.pop())
+        while indices:
+            next_point = max(indices, key=lambda point: min(abs(point - used) for used in temporal))
+            temporal.append(next_point)
+            indices.remove(next_point)
+        demos[str(row["demo_id"])].append(deque((row["trajectory_id"], i) for i in temporal))
+    queues = []
+    for demo in sorted(demos):
+        trajectories = deque(demos[demo])
+        queue = deque()
+        while trajectories:
+            trajectory = trajectories.popleft()
+            queue.append(trajectory.popleft())
+            if trajectory:
+                trajectories.append(trajectory)
+        queues.append(queue)
+    queues = deque(queues)
+    selected = defaultdict(list)
+    for _ in range(task_budget):
+        if not queues:
+            break
+        queue = queues.popleft()
+        trajectory, chunk = queue.popleft()
+        selected[trajectory].append(chunk)
+        if queue:
+            queues.append(queue)
+    return selected
+
+
+def index_contexts(manifest, output, points=10, task_limit=5, trajectories_per_task=20,
+                   task_context_limit=None):
     if min(points, task_limit, trajectories_per_task) < 1:
         raise ValueError("Dataset counts must be positive")
+    if task_context_limit is not None and task_context_limit < 1:
+        raise ValueError("Task context limit must be positive")
     if (Path(output) / "index.json").exists():
         raise FileExistsError("Context index already exists; choose a new output")
     source = Path(manifest).resolve()
@@ -47,6 +93,10 @@ def index_contexts(manifest, output, points=10, task_limit=5, trajectories_per_t
         (r for r in records if r["task"] == task), key=lambda r: str(r["trajectory_id"]))[:trajectories_per_task]]
     if len(tasks) < task_limit:
         raise ValueError(f"Need {task_limit} distinct seen tasks, found {len(tasks)}")
+    chosen = {task: balanced_points([r for r in selected if r["task"] == task], points,
+                                    task_context_limit if task_context_limit is not None else
+                                    sum(min(points, int(r["chunk_count"])) for r in selected if r["task"] == task))
+              for task in tasks}
     # Connected components prevent shared demos OR shared scenes crossing splits.
     parents = list(range(len(selected)))
     def find(index):
@@ -56,9 +106,11 @@ def index_contexts(manifest, output, points=10, task_limit=5, trajectories_per_t
         return index
     owners = {}
     for index, row in enumerate(selected):
-        for key in (("scene", row["task"], str(row["scene_id"])),
-                    ("seed", row["task"], int(row["simulator_seed"])),
-                    ("demo_id", row["task"], str(row["demo_id"])), ("demo", row["demo_latent"])):
+        keys = [("scene", row["task"], str(row["scene_id"])),
+                ("demo_id", row["task"], str(row["demo_id"])), ("demo", row["demo_latent"])]
+        if row["simulator_seed"] is not None:
+            keys.append(("seed", row["task"], int(row["simulator_seed"])))
+        for key in keys:
             if key in owners:
                 parents[find(index)] = find(owners[key])
             owners[key] = index
@@ -82,8 +134,7 @@ def index_contexts(manifest, output, points=10, task_limit=5, trajectories_per_t
             count = int(row["chunk_count"])
             if count < 1 or len(history) < count - 1:
                 raise ValueError("Recorded history is too short for chunk_count")
-            indices = sorted({round(i * (count - 1) / max(1, min(points, count) - 1))
-                              for i in range(min(points, count))})
+            indices = sorted(chosen[row["task"]][row["trajectory_id"]])
             for chunk in indices:
                 identifier = stable_id(row["task"], row["trajectory_id"], chunk)
                 context = dict(row, id=identifier, split=split, chunk=chunk,
@@ -93,6 +144,7 @@ def index_contexts(manifest, output, points=10, task_limit=5, trajectories_per_t
                 contexts.append(dict(id=identifier, path=str(path.resolve()), split=split, task=row["task"],
                                      sha256=hashlib.sha256(path.read_bytes()).hexdigest()))
     save_json(output / "index.json", dict(source=str(source), tasks=tasks, trajectories=len(selected),
-              groups=len(ordered), contexts=contexts,
+              groups=len(ordered), contexts=contexts, task_context_limit=task_context_limit,
+              task_counts={task: sum(c["task"] == task for c in contexts) for task in tasks},
               split_counts={name: sum(c["split"] == name for c in contexts) for name in ("train", "val", "test")}))
     return contexts

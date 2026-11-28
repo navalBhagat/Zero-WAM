@@ -1,12 +1,8 @@
 """Small JSON/CSV readers and table serialization."""
 import csv
-import json
 from pathlib import Path
 
-
-def read_json(path, default=None):
-    path = Path(path)
-    return json.loads(path.read_text()) if path.is_file() else default
+from wan_va.noise_inversion.records import read_json
 
 
 def write_csv(path, rows):

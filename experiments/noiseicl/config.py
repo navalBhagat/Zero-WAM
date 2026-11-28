@@ -1,8 +1,8 @@
 """Explicit campaign sizes and reproducible sampling settings."""
 from dataclasses import asdict, dataclass
 
-UNSEEN_TASKS = ("place_bread_basket", "place_object_scale", "open_microwave", "place_empty_cup",
-                "stamp_seal", "move_stapler_pad", "stack_blocks_three")
+from wan_va.noise_inversion.tasks import UNSEEN_TASKS
+
 STAGES = {
     1: "smoke", 2: "signal", 3: "benchmark", 4: "collect", 5: "train_evaluate",
 }

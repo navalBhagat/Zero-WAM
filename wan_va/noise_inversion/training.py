@@ -6,13 +6,11 @@ from pathlib import Path
 import random
 
 import torch
-from torch.nn import functional as F
 
-from experiments.io import read_json
-from experiments.runtime.records import save_json
-from wan_va.noise_inversion.adapter import AdapterConfig, NoiseAdapter
-from wan_va.noise_inversion.latents import reshape_latent
-from .config import UNSEEN_TASKS
+from .records import read_json
+from .adapter import AdapterConfig, NoiseAdapter
+from .latents import reshape_latent
+from .tasks import UNSEEN_TASKS
 
 
 def examples(dataset):
@@ -29,10 +27,12 @@ def examples(dataset):
         rows.append((row, context))
     owners = {}
     for _, context in rows:
-        for key in (("scene", context["task"], str(context["scene_id"])),
-                    ("seed", context["task"], int(context["simulator_seed"])),
-                    ("demo_id", context["task"], str(context["demo_id"])),
-                    ("demo", context["demo_latent"])):
+        keys = [("scene", context["task"], str(context["scene_id"])),
+                ("demo_id", context["task"], str(context["demo_id"])),
+                ("demo", context["demo_latent"])]
+        if context.get("simulator_seed") is not None:
+            keys.append(("seed", context["task"], int(context["simulator_seed"])))
+        for key in keys:
             previous = owners.setdefault(key, context["split"])
             if previous != context["split"]:
                 raise ValueError("Dataset leaks a scene/demo across splits")

@@ -135,7 +135,7 @@ def execute(campaign, name):
         from evaluation.robotwin.websocket_client_policy import WebsocketClientPolicy
         summary = collect(campaign, job, WebsocketClientPolicy(host="127.0.0.1", port=int(os.environ["PORT"])), manifest["source_digest"])
     else:
-        from .training import train
+        from wan_va.noise_inversion.training import train
         summary = train(Path(job["dataset"]), output, manifest["settings"])
     summary["seconds"] = time.perf_counter() - started
     save_json(output / "summary.json", summary)

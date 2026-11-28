@@ -5,7 +5,7 @@ from experiments.io import read_json
 from experiments.runtime.records import save_json
 from experiments.runtime.provenance import snapshot
 from .config import STAGES, UNSEEN_TASKS
-from .dataset import stable_id, gaussian_seed
+from wan_va.noise_inversion.dataset import stable_id, gaussian_seed
 
 
 def evaluation_jobs(settings, learned=False):
@@ -61,6 +61,9 @@ def plan(directory, settings, contexts=None, dataset=None):
             if pair.get("status") != "completed":
                 continue
             context = read_json(Path(pair["context"]))
+            if context.get("simulator_seed") is None:
+                raise ValueError("Stage-5 seen-scene evaluation requires verified simulator seeds; "
+                                 "recorded HumanGen episode IDs are not simulator seeds")
             demo_pool.add(context["demo_latent"])
             reserved.setdefault(context["task"], set()).add(int(context["simulator_seed"]))
             if context["split"] == "test":

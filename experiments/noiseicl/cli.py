@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from .config import Settings, STAGES
-from .dataset import index_contexts
+from wan_va.noise_inversion.dataset import index_contexts
 from .planning import plan
 from .reporting import report
 from .submission import submit

@@ -18,6 +18,7 @@ safetensors
 huggingface_hub
 Pillow
 PyYAML
+pyarrow
 
 
 scipy

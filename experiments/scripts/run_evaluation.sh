@@ -5,7 +5,7 @@ set -eo pipefail
 : "${NOISE_CAMPAIGN:?Submit a planned NoiseICL campaign}"
 case "${EXPERIMENT_CLUSTER:-}" in das6|snellius) ;; *) echo "Unknown cluster" >&2; exit 1 ;; esac
 source "$ZERO_WAM_ROOT/experiments/scripts/clusters/$EXPERIMENT_CLUSTER.sh"
-activate_experiment_environment robotwin
+activate_experiment_environment zerowam
 if [[ -n "${NOISE_ARRAY_MAP:-}" ]]; then
     NOISE_JOB=$(python -c 'import json,os; print(json.load(open(os.environ["NOISE_ARRAY_MAP"]))[int(os.environ["SLURM_ARRAY_TASK_ID"])])')
     export NOISE_JOB
@@ -51,20 +51,23 @@ KIND=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["kind"])' 
 if [[ "$KIND" == "train" ]]; then
     activate_experiment_environment zerowam
 else
-    # Both released success overrides are installed before the client imports.
-    (
-        flock -x 9
-        for task in move_stapler_pad stamp_seal; do
-            target="$ROBOTWIN_ROOT/envs/$task.py"
-            if [[ ! -e "$target.upstream" ]]; then cp "$target" "$target.upstream"; fi
-            if ! cmp -s "evaluation/robotwin/envs/$task.py" "$target"; then
-                temporary="$target.noiseicl_${SLURM_JOB_ID}.tmp"
-                cp "evaluation/robotwin/envs/$task.py" "$temporary"
-                mv "$temporary" "$target"
-            fi
-        done
-    ) 9>"$ROBOTWIN_ROOT/.noiseicl-patches.lock"
-    if [[ "$KIND" == "evaluate" ]]; then python experiments/scripts/job_report.py preflight; fi
+    if [[ "$KIND" == "evaluate" ]]; then
+        activate_experiment_environment robotwin
+        # Both released success overrides are installed before the client imports.
+        (
+            flock -x 9
+            for task in move_stapler_pad stamp_seal; do
+                target="$ROBOTWIN_ROOT/envs/$task.py"
+                if [[ ! -e "$target.upstream" ]]; then cp "$target" "$target.upstream"; fi
+                if ! cmp -s "evaluation/robotwin/envs/$task.py" "$target"; then
+                    temporary="$target.noiseicl_${SLURM_JOB_ID}.tmp"
+                    cp "evaluation/robotwin/envs/$task.py" "$temporary"
+                    mv "$temporary" "$target"
+                fi
+            done
+        ) 9>"$ROBOTWIN_ROOT/.noiseicl-patches.lock"
+        python experiments/scripts/job_report.py preflight
+    fi
     python -m pip freeze > "$RUN_DIR/diagnostics/client_packages.txt"
     SERVER_STARTED=$(date +%s)
     (

@@ -6,7 +6,7 @@ from unittest.mock import patch
 import pytest
 
 from experiments.noiseicl.config import Settings
-from experiments.noiseicl.dataset import index_contexts
+from wan_va.noise_inversion.dataset import index_contexts
 from experiments.noiseicl.planning import plan
 from experiments.noiseicl.submission import submit
 from experiments.noiseicl.reporting import report
