@@ -4,6 +4,13 @@ See [campaign commands](../README.md) for the five stages. Plan on the cluster
 where execution will occur so absolute data/output paths resolve correctly.
 Use a new campaign directory after code changes. Plan creation does not submit.
 
+Combine exported evaluation reports with `report --directory <new-output>
+--campaigns <campaign-a> <campaign-b> --plots`. Inputs need `trials.csv` and
+`timing.csv`; simulation tensors and logs are not required. Rows retain source
+campaign identity, comparisons pair methods within campaigns, and confidence
+intervals resample scene groups together across noise seeds. The output must
+differ from every input. Input reports are preserved.
+
 For independent jobs, `submit --limit 100 --max-concurrent 5` submits one Slurm
 array with at most five running tasks. Each task requests one GPU. This limit
 applies to that array, not other submissions. Array logs are in

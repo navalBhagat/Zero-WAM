@@ -1,4 +1,5 @@
 """Common-denominator success tables, collection quality and measured GPU time."""
+import csv
 import json
 import random
 from pathlib import Path
@@ -7,8 +8,7 @@ from experiments.io import read_json, write_csv
 from experiments.runtime.records import save_json
 
 
-def report(directory, plots=False):
-    directory = Path(directory)
+def campaign_rows(directory):
     manifest = read_json(directory / "manifest.json")
     rows, timings = [], []
     for job in manifest["jobs"]:
@@ -22,8 +22,38 @@ def report(directory, plots=False):
             methods = summary.get("methods", {})
             complete = all(methods.get(m, {}).get("status") == "completed" for m in job["methods"])
             for method in job["methods"]:
-                rows.append(dict(task=job["task"], scene=job["scene"], method=method,
+                rows.append(dict(campaign=str(directory.resolve()), sampling_seed=manifest["settings"]["sampling_seed"],
+                                 task=job["task"], scene=job["scene"], method=method,
                                  matched_complete=complete, **methods.get(method, dict(status=job_status))))
+    return manifest, rows, timings
+
+
+def combined_rows(campaigns, output):
+    sources = [Path(path).resolve() for path in campaigns]
+    if len(set(sources)) != len(sources) or output.resolve() in sources:
+        raise ValueError("Use distinct input campaigns and a separate output directory")
+    rows, timings = [], []
+    for source in sources:
+        with (source / "trials.csv").open() as stream:
+            for row in csv.DictReader(stream):
+                row["campaign"] = str(source)
+                for key in ("matched_complete", "success", "fallback"):
+                    row[key] = row.get(key, "").lower() == "true"
+                rows.append(row)
+        with (source / "timing.csv").open() as stream:
+            for row in csv.DictReader(stream):
+                row.update(campaign=str(source), gpu_hours=float(row["gpu_hours"]))
+                timings.append(row)
+    return dict(jobs=[]), rows, timings
+
+
+def report(directory, plots=False, campaigns=None):
+    directory = Path(directory)
+    if campaigns:
+        manifest, rows, timings = combined_rows(campaigns, directory)
+    else:
+        manifest, rows, timings = campaign_rows(directory)
+    directory.mkdir(parents=True, exist_ok=True)
     write_csv(directory / "trials.csv", rows)
     write_csv(directory / "timing.csv", timings)
     tables = []
@@ -37,15 +67,25 @@ def report(directory, plots=False):
                 success_percent=100 * sum(r.get("success", False) for r in valid) / len(valid) if valid else None))
     for table in tables:
         group = [r for r in rows if r["task"] == table["task"] and r["method"] == table["method"] and r["matched_complete"]]
-        controls = {r["scene"]: r for r in rows if r["task"] == table["task"] and r["method"] == "control" and r["matched_complete"]}
-        failures = [r for r in group if not controls[r["scene"]]["success"]]
-        successes = [r for r in group if controls[r["scene"]]["success"]]
-        differences = [int(r["success"]) - int(controls[r["scene"]]["success"]) for r in group]
+        controls = {(r.get("campaign"), str(r["scene"])): r for r in rows if r["task"] == table["task"] and r["method"] == "control" and r["matched_complete"]}
+        failures = [r for r in group if not controls[(r.get("campaign"), str(r["scene"]))]["success"]]
+        successes = [r for r in group if controls[(r.get("campaign"), str(r["scene"]))]["success"]]
+        differences = [int(r["success"]) - int(controls[(r.get("campaign"), str(r["scene"]))]["success"]) for r in group]
         table.update(control_failures=len(failures), rescues=sum(r["success"] for r in failures),
                      control_successes=len(successes), regressions=sum(not r["success"] for r in successes))
         if len(differences) >= 2:
             rng = random.Random(1234)
-            bootstrap = sorted(100 * sum(rng.choices(differences, k=len(differences))) / len(differences) for _ in range(1000))
+            # Different noise seeds for the same scene are correlated. Resample
+            # whole scene groups while retaining method pairing within campaigns.
+            clusters = {}
+            for row, difference in zip(group, differences):
+                clusters.setdefault(str(row["scene"]), []).append(difference)
+            scenes = list(clusters)
+            bootstrap = []
+            for _ in range(1000):
+                sample = [value for scene in rng.choices(scenes, k=len(scenes)) for value in clusters[scene]]
+                bootstrap.append(100 * sum(sample) / len(sample))
+            bootstrap.sort()
             table.update(gain_percent=100 * sum(differences) / len(differences),
                          paired_scene_ci_low=bootstrap[25], paired_scene_ci_high=bootstrap[974])
         else:
@@ -66,7 +106,8 @@ def report(directory, plots=False):
         rates = [r["success_percent"] for r in tables if r["method"] == method and r["success_percent"] is not None]
         macros[method] = sum(rates) / len(rates) if rates else None
     save_json(directory / "analysis.json", dict(macro_success=macros, collection=quality,
-              measured_gpu_hours=sum(t["gpu_hours"] for t in timings)))
+              measured_gpu_hours=sum(t["gpu_hours"] for t in timings),
+              source_campaigns=[str(Path(p).resolve()) for p in campaigns] if campaigns else None))
     if plots and tables:
         import matplotlib
         matplotlib.use("Agg")

@@ -41,6 +41,7 @@ def main():
     a = commands.add_parser("report")
     a.add_argument("--directory", type=Path, required=True)
     a.add_argument("--plots", action="store_true")
+    a.add_argument("--campaigns", type=Path, nargs="+", help="Combine existing campaign report CSVs into --directory")
     i = commands.add_parser("index")
     i.add_argument("--trajectories", type=Path, required=True)
     i.add_argument("--output", type=Path, required=True)
@@ -69,7 +70,7 @@ def main():
             rows = index_contexts(args.trajectories, args.output, args.points, args.tasks, args.trajectories_per_task)
             print(f"Indexed {len(rows)} grouped history points; split assignment precedes Gaussian seeds.")
         elif args.command == "report":
-            print(json.dumps(report(args.directory, args.plots), indent=2))
+            print(json.dumps(report(args.directory, args.plots, args.campaigns), indent=2))
         else:
             print(json.dumps(dict(task="seen_task_name", trajectory_id="trajectory_001", scene_id="scene_001",
                 simulator_seed=100000, demo_id="demo_001", demo_latent="/data/human.pth",

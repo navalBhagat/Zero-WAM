@@ -82,3 +82,25 @@ def test_array_submission_is_throttled_and_retries_keep_task_mapping(tmp_path):
             assert submit(directory, limit=7, retry=True, max_concurrent=5) == [f"124_{i}" for i in range(6)]
         assert json.loads(mapping.read_text()) == [f"task_{i}" for i in range(7)]
         assert "--array=0-5%5" in sbatch.call_args.args[0]
+
+
+def test_combined_reports_pair_within_campaign_and_keep_scenes_clustered(tmp_path):
+    from experiments.io import write_csv
+    sources = []
+    for index in range(2):
+        source = tmp_path / f"seed_{index}"
+        source.mkdir()
+        sources.append(source)
+        # Opposite controls across seeds reveal accidental scene-only matching.
+        write_csv(source / "trials.csv", [dict(task="task", scene=1, method=method,
+            matched_complete=True, status="completed", success=success, fallback=False)
+            for method, success in [("control", index == 0), ("oracle", index == 1)]])
+        write_csv(source / "timing.csv", [dict(job="trial", kind="evaluate", status="completed", gpu_hours=1)])
+    result = report(tmp_path / "combined", campaigns=sources)
+    oracle = next(row for row in result["success"] if row["method"] == "oracle")
+    assert oracle["valid"] == 2
+    assert oracle["rescues"] == oracle["regressions"] == 1
+    assert oracle["gain_percent"] == 0
+    assert oracle["paired_scene_ci_low"] == oracle["paired_scene_ci_high"] == 0
+    with pytest.raises(ValueError, match="distinct"):
+        report(tmp_path / "combined", campaigns=[sources[0], sources[0]])
