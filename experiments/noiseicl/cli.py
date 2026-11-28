@@ -73,6 +73,16 @@ def main():
     q.add_argument(
         "--worst", type=int, default=10, help="Number of highest-error examples to list"
     )
+    split = commands.add_parser(
+        "resplit", help="Create a per-task grouped split view; reuse collected tensors"
+    )
+    split.add_argument(
+        "--directory", type=Path, required=True, help="Completed source collection"
+    )
+    split.add_argument(
+        "--output", type=Path, required=True, help="Fresh dataset-view directory"
+    )
+    split.add_argument("--seed", type=int, default=1234)
     i = commands.add_parser("index")
     i.add_argument("--trajectories", type=Path, required=True)
     i.add_argument("--output", type=Path, required=True)
@@ -135,6 +145,14 @@ def main():
         elif args.command == "report":
             print(
                 json.dumps(report(args.directory, args.plots, args.campaigns), indent=2)
+            )
+        elif args.command == "resplit":
+            from wan_va.noise_inversion.resplit import resplit_collection
+
+            print(
+                json.dumps(
+                    resplit_collection(args.directory, args.output, args.seed), indent=2
+                )
             )
         elif args.command == "quality":
             if args.worst < 1:

@@ -130,6 +130,58 @@ def balanced_points(rows, points, task_budget):
     return selected
 
 
+def grouped_splits(
+    records: list[dict], seed: int = 1234
+) -> list[tuple[list[dict], str]]:
+    """Split connected recording/demo groups 70/15/15 within each task."""
+    parents = list(range(len(records)))
+
+    def find(index):
+        while parents[index] != index:
+            parents[index] = parents[parents[index]]
+            index = parents[index]
+        return index
+
+    owners = {}
+    for index, row in enumerate(records):
+        for key in context_group_keys(row):
+            if key in owners:
+                parents[find(index)] = find(owners[key])
+            owners[key] = index
+    groups = {}
+    for index, row in enumerate(records):
+        groups.setdefault(find(index), []).append(row)
+    task_groups = defaultdict(list)
+    for group in groups.values():
+        tasks = {row["task"] for row in group}
+        if len(tasks) != 1:
+            raise ValueError(
+                "A shared recording/demo connects multiple tasks; independent per-task splitting is unsafe"
+            )
+        task_groups[tasks.pop()].append(group)
+
+    assignments = []
+    for task, groups in sorted(task_groups.items()):
+        if len(groups) < 3:
+            raise ValueError(
+                f"{task}: need at least three independent recording/demo groups"
+            )
+        ordered = sorted(
+            groups,
+            key=lambda group: stable_id(
+                seed, task, *sorted({str(row["trajectory_id"]) for row in group})
+            ),
+        )
+        train_end = max(1, min(len(ordered) - 2, round(len(ordered) * 0.7)))
+        val_end = max(train_end + 1, min(len(ordered) - 1, round(len(ordered) * 0.85)))
+        for index, group in enumerate(ordered):
+            split = (
+                "train" if index < train_end else "val" if index < val_end else "test"
+            )
+            assignments.append((group, split))
+    return assignments
+
+
 def index_contexts(
     manifest,
     output,
@@ -203,44 +255,10 @@ def index_contexts(
         )
         for task in tasks
     }
-    # Connected components prevent shared demos OR shared scenes crossing splits.
-    parents = list(range(len(selected)))
-
-    def find(index):
-        while parents[index] != index:
-            parents[index] = parents[parents[index]]
-            index = parents[index]
-        return index
-
-    owners = {}
-    for index, row in enumerate(selected):
-        for key in context_group_keys(row):
-            if key in owners:
-                parents[find(index)] = find(owners[key])
-            owners[key] = index
-    groups = {}
-    for index, row in enumerate(selected):
-        groups.setdefault(find(index), []).append(row)
-    ordered = sorted(
-        groups.values(),
-        key=lambda group: stable_id(
-            *sorted(row["task"] + ":" + str(row["trajectory_id"]) for row in group)
-        ),
-    )
-    if len(ordered) < 3:
-        raise ValueError(
-            "Need at least three independent scene/demo groups for train/val/test"
-        )
-    train_end = max(1, min(len(ordered) - 2, round(len(ordered) * 0.7)))
-    val_end = max(train_end + 1, min(len(ordered) - 1, round(len(ordered) * 0.85)))
+    assignments = grouped_splits(selected)
     contexts = []
     output = Path(output)
-    for group_index, group in enumerate(ordered):
-        split = (
-            "train"
-            if group_index < train_end
-            else "val" if group_index < val_end else "test"
-        )
+    for group, split in assignments:
         for row in group:
             history = sorted(Path(row["history"]).glob("chunk_*.pt"))
             if [p.name for p in history] != [
@@ -277,7 +295,8 @@ def index_contexts(
             source=str(source),
             tasks=tasks,
             trajectories=len(selected),
-            groups=len(ordered),
+            groups=len(assignments),
+            split_policy="per_task_recording_demo_groups",
             contexts=contexts,
             task_context_limit=task_context_limit,
             task_counts={

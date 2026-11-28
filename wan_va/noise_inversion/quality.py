@@ -79,7 +79,10 @@ def check_pair_tensors(record: dict, context: dict, checked_files: set) -> None:
 
 
 def inspect_dataset(
-    directory: str | Path, check_tensors: bool = True, worst: int = 10
+    directory: str | Path,
+    check_tensors: bool = True,
+    worst: int = 10,
+    require_task_coverage: bool = True,
 ) -> dict:
     """Summarize errors and report integrity failures without modifying the data."""
     directory = Path(directory).resolve()
@@ -211,6 +214,10 @@ def inspect_dataset(
             contexts=len({row["context"] for row in rows}),
             splits=dict(Counter(row["split"] for row in rows)),
         )
+        if require_task_coverage:
+            for split in SPLITS:
+                if not task_statistics[task]["splits"].get(split):
+                    errors.append(f"{task}: no eligible pairs in {split} split")
     if any(
         context.get("simulator_seed") is None for context in valid_contexts.values()
     ):

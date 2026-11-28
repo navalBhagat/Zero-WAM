@@ -158,7 +158,8 @@ python -u experiments/scripts/noiseicl.py quality \
 ```
 
 The command checks every planned pair, context hashes/source digests, duplicate
-targets/seeds, finite tensors, shapes/masks, and recording/demo split separation.
+targets/seeds, finite tensors, shapes/masks, recording/demo split separation, and
+nonempty training/validation/test coverage for every task.
 Fallback targets are excluded from usable counts. It reports mean, median, 95th
 percentile, and maximum reconstruction errors overall and per task, split counts,
 and the ten highest-error examples. Errors exit with status 1. Missing simulator
@@ -214,3 +215,49 @@ run within a permitted DAS6 GPU window. Do not change source after planning.
 
 Core implementations live in `wan_va/noise_inversion/quality.py`, `dataset.py`,
 and `training.py`. Experiment modules handle report files, planning, and submission.
+
+## Repair an existing collection split
+
+New context indexes split recording/demo groups within each task: approximately
+70% training, 15% validation, and 15% test by group count. This ensures every task
+has all three splits, provided at least three independent groups exist. Connected
+recordings remain together; with 20 independent human-demo groups, each task has
+14/3/3 groups. Pair counts can differ because groups have different sizes.
+
+The existing pilot used a global split and has no `adjust_bottle` test pairs.
+Create a fresh split view of the completed pairs on DAS6:
+
+```bash
+python experiments/scripts/noiseicl.py resplit \
+  --directory experiments/stages/04_collect_pilot \
+  --output experiments/stages/04_collect_pilot_stratified --seed 1234
+python -u experiments/scripts/noiseicl.py quality \
+  --directory experiments/stages/04_collect_pilot_stratified
+```
+
+Re-splitting writes new context/record/job metadata and `resplit.json`, which
+records the source manifest hash, policy, group counts, and before/after pair
+counts. Noise tensors, history files, seeds, and original collection records stay
+unchanged. No inversion is rerun and tensors are not copied. Keep the original
+collection and shared histories available: the new view references those files.
+The repair command permits the source's missing task coverage, but requires valid
+collection metadata and checks coverage and separation on its output. It refuses
+to overwrite an existing directory or break a connected group to fill a split.
+
+Use a fresh full-training run with the repaired view; previous overfit/training
+checkpoints used a different split and must not initialize this baseline:
+
+```bash
+python experiments/scripts/noiseicl.py plan --stage 5 --training-only \
+  --cluster das6 --directory experiments/stages/05_baseline_stratified \
+  --dataset experiments/stages/04_collect_pilot_stratified \
+  --train-steps 5000 --batch 64 --hours 8
+python experiments/scripts/noiseicl.py submit \
+  --directory experiments/stages/05_baseline_stratified --limit 1
+```
+
+The eight-hour request is a budget, not a measured runtime. The pilot overfit run
+took about five minutes for 500 steps at batch 8; this baseline has 80 times as many
+training-example updates. Choose an allocation permitted by your DAS6 GPU window.
+Full training uses validation for checkpoint selection and reads test tensors only
+after that selection. This baseline is not an Optuna search.
