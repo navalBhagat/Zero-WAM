@@ -1,4 +1,5 @@
 """Grouped trajectory indexing; seeds/chunks can never cross split boundaries."""
+
 import hashlib
 import json
 from collections import defaultdict, deque
@@ -7,9 +8,68 @@ from pathlib import Path
 from .records import save_json
 from .tasks import UNSEEN_TASKS
 
+SPLITS = ("train", "val", "test")
+
+
+def context_group_keys(context: dict) -> list[tuple]:
+    """Identities that must never cross training/validation/test boundaries."""
+    task = context["task"]
+    keys = [
+        ("scene", task, str(context["scene_id"])),
+        ("demo_id", task, str(context["demo_id"])),
+        ("demo", str(Path(context["demo_latent"]).resolve())),
+    ]
+    if context.get("trajectory_id") is not None:
+        keys.append(("trajectory", task, str(context["trajectory_id"])))
+    if context.get("simulator_seed") is not None:
+        keys.append(("seed", task, int(context["simulator_seed"])))
+    return keys
+
+
+def split_violations(contexts: list[dict]) -> list[str]:
+    owners = {}
+    errors = set()
+    for context in contexts:
+        split = context["split"]
+        if split not in SPLITS:
+            errors.add(f"Unknown dataset split: {split}")
+        for key in context_group_keys(context):
+            previous = owners.setdefault(key, split)
+            if previous != split:
+                errors.add(f"Dataset leaks {key} across {previous}/{split}")
+    return sorted(errors)
+
+
+def load_examples(dataset: str | Path) -> list[tuple[dict, dict]]:
+    """Load eligible training records and check their context provenance/groups."""
+    rows = []
+    for path in sorted(Path(dataset).glob("pairs/*/record.json")):
+        row = json.loads(path.read_text())
+        if row.get("status") != "completed" or row.get("fallback"):
+            continue
+        context_path = Path(row["context"])
+        expected_hash = row.get("context_sha256")
+        if (
+            expected_hash
+            and hashlib.sha256(context_path.read_bytes()).hexdigest() != expected_hash
+        ):
+            raise ValueError(
+                f"Training context changed since collection: {context_path}"
+            )
+        context = json.loads(context_path.read_text())
+        if context["task"] in UNSEEN_TASKS:
+            raise ValueError("Unseen-task example found in training dataset")
+        rows.append((row, context))
+    errors = split_violations([context for _, context in rows])
+    if errors:
+        raise ValueError("; ".join(errors))
+    return rows
+
 
 def read_lines(path):
-    return [json.loads(line) for line in Path(path).read_text().splitlines() if line.strip()]
+    return [
+        json.loads(line) for line in Path(path).read_text().splitlines() if line.strip()
+    ]
 
 
 def stable_id(*parts):
@@ -25,8 +85,12 @@ def balanced_points(rows, points, task_budget):
     demos = defaultdict(list)
     for row in sorted(rows, key=lambda r: str(r["trajectory_id"])):
         count = int(row["chunk_count"])
-        indices = sorted({round(i * (count - 1) / max(1, min(points, count) - 1))
-                          for i in range(min(points, count))})
+        indices = sorted(
+            {
+                round(i * (count - 1) / max(1, min(points, count) - 1))
+                for i in range(min(points, count))
+            }
+        )
         # Under a budget, visit both ends and then fill the largest temporal gap
         # rather than concentrating all selected contexts near the beginning.
         temporal = []
@@ -35,10 +99,14 @@ def balanced_points(rows, points, task_budget):
         if indices:
             temporal.append(indices.pop())
         while indices:
-            next_point = max(indices, key=lambda point: min(abs(point - used) for used in temporal))
+            next_point = max(
+                indices, key=lambda point: min(abs(point - used) for used in temporal)
+            )
             temporal.append(next_point)
             indices.remove(next_point)
-        demos[str(row["demo_id"])].append(deque((row["trajectory_id"], i) for i in temporal))
+        demos[str(row["demo_id"])].append(
+            deque((row["trajectory_id"], i) for i in temporal)
+        )
     queues = []
     for demo in sorted(demos):
         trajectories = deque(demos[demo])
@@ -62,8 +130,14 @@ def balanced_points(rows, points, task_budget):
     return selected
 
 
-def index_contexts(manifest, output, points=10, task_limit=5, trajectories_per_task=20,
-                   task_context_limit=None):
+def index_contexts(
+    manifest,
+    output,
+    points=10,
+    task_limit=5,
+    trajectories_per_task=20,
+    task_context_limit=None,
+):
     if min(points, task_limit, trajectories_per_task) < 1:
         raise ValueError("Dataset counts must be positive")
     if task_context_limit is not None and task_context_limit < 1:
@@ -72,7 +146,17 @@ def index_contexts(manifest, output, points=10, task_limit=5, trajectories_per_t
         raise FileExistsError("Context index already exists; choose a new output")
     source = Path(manifest).resolve()
     records = read_lines(source)
-    required = ("task", "trajectory_id", "scene_id", "demo_id", "demo_latent", "initial", "history", "chunk_count", "simulator_seed")
+    required = (
+        "task",
+        "trajectory_id",
+        "scene_id",
+        "demo_id",
+        "demo_latent",
+        "initial",
+        "history",
+        "chunk_count",
+        "simulator_seed",
+    )
     identities = set()
     for row in records:
         if any(key not in row for key in required):
@@ -85,51 +169,83 @@ def index_contexts(manifest, output, points=10, task_limit=5, trajectories_per_t
         identities.add(key)
         for name in ("demo_latent", "initial", "history"):
             path = Path(row[name]).expanduser()
-            row[name] = str((source.parent / path).resolve() if not path.is_absolute() else path.resolve())
+            row[name] = str(
+                (source.parent / path).resolve()
+                if not path.is_absolute()
+                else path.resolve()
+            )
             if not Path(row[name]).exists():
                 raise FileNotFoundError(row[name])
     tasks = sorted({row["task"] for row in records})[:task_limit]
-    selected = [row for task in tasks for row in sorted(
-        (r for r in records if r["task"] == task), key=lambda r: str(r["trajectory_id"]))[:trajectories_per_task]]
+    selected = [
+        row
+        for task in tasks
+        for row in sorted(
+            (r for r in records if r["task"] == task),
+            key=lambda r: str(r["trajectory_id"]),
+        )[:trajectories_per_task]
+    ]
     if len(tasks) < task_limit:
         raise ValueError(f"Need {task_limit} distinct seen tasks, found {len(tasks)}")
-    chosen = {task: balanced_points([r for r in selected if r["task"] == task], points,
-                                    task_context_limit if task_context_limit is not None else
-                                    sum(min(points, int(r["chunk_count"])) for r in selected if r["task"] == task))
-              for task in tasks}
+    chosen = {
+        task: balanced_points(
+            [r for r in selected if r["task"] == task],
+            points,
+            (
+                task_context_limit
+                if task_context_limit is not None
+                else sum(
+                    min(points, int(r["chunk_count"]))
+                    for r in selected
+                    if r["task"] == task
+                )
+            ),
+        )
+        for task in tasks
+    }
     # Connected components prevent shared demos OR shared scenes crossing splits.
     parents = list(range(len(selected)))
+
     def find(index):
         while parents[index] != index:
             parents[index] = parents[parents[index]]
             index = parents[index]
         return index
+
     owners = {}
     for index, row in enumerate(selected):
-        keys = [("scene", row["task"], str(row["scene_id"])),
-                ("demo_id", row["task"], str(row["demo_id"])), ("demo", row["demo_latent"])]
-        if row["simulator_seed"] is not None:
-            keys.append(("seed", row["task"], int(row["simulator_seed"])))
-        for key in keys:
+        for key in context_group_keys(row):
             if key in owners:
                 parents[find(index)] = find(owners[key])
             owners[key] = index
     groups = {}
     for index, row in enumerate(selected):
         groups.setdefault(find(index), []).append(row)
-    ordered = sorted(groups.values(), key=lambda group: stable_id(*sorted(
-        row["task"] + ":" + str(row["trajectory_id"]) for row in group)))
+    ordered = sorted(
+        groups.values(),
+        key=lambda group: stable_id(
+            *sorted(row["task"] + ":" + str(row["trajectory_id"]) for row in group)
+        ),
+    )
     if len(ordered) < 3:
-        raise ValueError("Need at least three independent scene/demo groups for train/val/test")
-    train_end = max(1, min(len(ordered) - 2, round(len(ordered) * .7)))
-    val_end = max(train_end + 1, min(len(ordered) - 1, round(len(ordered) * .85)))
+        raise ValueError(
+            "Need at least three independent scene/demo groups for train/val/test"
+        )
+    train_end = max(1, min(len(ordered) - 2, round(len(ordered) * 0.7)))
+    val_end = max(train_end + 1, min(len(ordered) - 1, round(len(ordered) * 0.85)))
     contexts = []
     output = Path(output)
     for group_index, group in enumerate(ordered):
-        split = "train" if group_index < train_end else "val" if group_index < val_end else "test"
+        split = (
+            "train"
+            if group_index < train_end
+            else "val" if group_index < val_end else "test"
+        )
         for row in group:
             history = sorted(Path(row["history"]).glob("chunk_*.pt"))
-            if [p.name for p in history] != [f"chunk_{i:04d}.pt" for i in range(len(history))]:
+            if [p.name for p in history] != [
+                f"chunk_{i:04d}.pt" for i in range(len(history))
+            ]:
                 raise ValueError(f"Non-contiguous recorded history: {row['history']}")
             count = int(row["chunk_count"])
             if count < 1 or len(history) < count - 1:
@@ -137,14 +253,40 @@ def index_contexts(manifest, output, points=10, task_limit=5, trajectories_per_t
             indices = sorted(chosen[row["task"]][row["trajectory_id"]])
             for chunk in indices:
                 identifier = stable_id(row["task"], row["trajectory_id"], chunk)
-                context = dict(row, id=identifier, split=split, chunk=chunk,
-                               history=[str(p) for p in history[:chunk]])
+                context = dict(
+                    row,
+                    id=identifier,
+                    split=split,
+                    chunk=chunk,
+                    history=[str(p) for p in history[:chunk]],
+                )
                 path = output / "contexts" / f"{identifier}.json"
                 save_json(path, context)
-                contexts.append(dict(id=identifier, path=str(path.resolve()), split=split, task=row["task"],
-                                     sha256=hashlib.sha256(path.read_bytes()).hexdigest()))
-    save_json(output / "index.json", dict(source=str(source), tasks=tasks, trajectories=len(selected),
-              groups=len(ordered), contexts=contexts, task_context_limit=task_context_limit,
-              task_counts={task: sum(c["task"] == task for c in contexts) for task in tasks},
-              split_counts={name: sum(c["split"] == name for c in contexts) for name in ("train", "val", "test")}))
+                contexts.append(
+                    dict(
+                        id=identifier,
+                        path=str(path.resolve()),
+                        split=split,
+                        task=row["task"],
+                        sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+                    )
+                )
+    save_json(
+        output / "index.json",
+        dict(
+            source=str(source),
+            tasks=tasks,
+            trajectories=len(selected),
+            groups=len(ordered),
+            contexts=contexts,
+            task_context_limit=task_context_limit,
+            task_counts={
+                task: sum(c["task"] == task for c in contexts) for task in tasks
+            },
+            split_counts={
+                name: sum(c["split"] == name for c in contexts)
+                for name in ("train", "val", "test")
+            },
+        ),
+    )
     return contexts

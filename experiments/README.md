@@ -142,5 +142,75 @@ they may differ from nominal 70/15/15. The seven unseen tasks are rejected.
 Stage 5 defaults to eight transformer blocks, width 512 and eight heads. Start
 with `--overfit-pairs 100 --train-steps 500`; `--architecture mlp` selects a simple
 patch-wise baseline. Effective batch size is controlled by gradient accumulation
-through `--batch`. Validation selects the best checkpoint; test MSE is measured
-only after selection. Dataset paths must stay available throughout the campaign.
+through `--batch`. Dataset paths must stay available throughout the campaign.
+
+## Check collection quality and train on DAS6
+
+After syncing the updated code, use the completed collection directly. Quality
+checks are read-only with respect to collected data and run on CPU:
+
+```bash
+source "$HOME/nbhagat-workspace-env.sh"
+conda activate zerowam
+cd "$ZERO_WAM_ROOT"
+python -u experiments/scripts/noiseicl.py quality \
+  --directory experiments/stages/04_collect_pilot
+```
+
+The command checks every planned pair, context hashes/source digests, duplicate
+targets/seeds, finite tensors, shapes/masks, and recording/demo split separation.
+Fallback targets are excluded from usable counts. It reports mean, median, 95th
+percentile, and maximum reconstruction errors overall and per task, split counts,
+and the ten highest-error examples. Errors exit with status 1. Missing simulator
+seeds are explained as a limitation of scene verification, not fabricated.
+There is no assumed reconstruction-error cutoff or claim of robot success.
+
+Reports are saved in `experiments/stages/04_collect_pilot/quality/`:
+`summary.json`, `tasks.csv`, and `worst_examples.csv`. Use `--worst N` for more
+examples, `--output PATH` for a separate report directory, or `--metadata-only`
+for a quick record/group check that skips tensor contents.
+
+Start with a 100-pair overfit diagnostic. This uses the existing stage-5 planner
+but creates only one training job, with no simulator evaluation or seed requirement:
+
+```bash
+python experiments/scripts/noiseicl.py plan --stage 5 --training-only \
+  --cluster das6 --directory experiments/stages/05_overfit \
+  --dataset experiments/stages/04_collect_pilot \
+  --overfit-pairs 100 --train-steps 500 --batch 8
+python experiments/scripts/noiseicl.py submit \
+  --directory experiments/stages/05_overfit --limit 1
+```
+
+The subset is selected reproducibly from training data only. Overfit mode selects
+the checkpoint by MSE on that subset, reports the unchanged-noise baseline, and
+does not read validation/test tensors. Check
+`experiments/stages/05_overfit/jobs/train/summary.json` and `training.jsonl` there:
+`selected_metrics.mse` should decrease below `selected_metrics.zero_residual_mse`.
+This is a diagnostic, not evidence of generalization. Progress is logged every
+100 steps and at the final step; the GPU job's `diagnostics/client.log` captures it.
+
+Once that diagnostic works, create a fresh full-training campaign:
+
+```bash
+python experiments/scripts/noiseicl.py plan --stage 5 --training-only \
+  --cluster das6 --directory experiments/stages/05_train \
+  --dataset experiments/stages/04_collect_pilot --train-steps 5000 --batch 64
+python experiments/scripts/noiseicl.py submit \
+  --directory experiments/stages/05_train --limit 1
+```
+
+Full training selects checkpoints using validation MSE and evaluates test MSE
+only after selection. `adapter.pt` is the best model; `latest.pt` includes optimizer
+and RNG state for resumption. `submit --retry` resumes an inactive unfinished
+training job. Batch/seed/subset or architecture changes require a fresh run;
+checkpoints from the earlier trainer format require a fresh output directory.
+Training-only planning checks collection completion and metadata integrity. Run
+the full quality command first to validate tensor contents as well.
+
+The default job allocation ceiling is three hours, not an estimated training
+duration. Use the overfit timing to choose `--hours` for the subsequent plan and
+run within a permitted DAS6 GPU window. Do not change source after planning.
+
+Core implementations live in `wan_va/noise_inversion/quality.py`, `dataset.py`,
+and `training.py`. Experiment modules handle report files, planning, and submission.

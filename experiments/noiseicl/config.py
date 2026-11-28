@@ -1,10 +1,15 @@
 """Explicit campaign sizes and reproducible sampling settings."""
+
 from dataclasses import asdict, dataclass
 
 from wan_va.noise_inversion.tasks import UNSEEN_TASKS
 
 STAGES = {
-    1: "smoke", 2: "signal", 3: "benchmark", 4: "collect", 5: "train_evaluate",
+    1: "smoke",
+    2: "signal",
+    3: "benchmark",
+    4: "collect",
+    5: "train_evaluate",
 }
 
 
@@ -26,19 +31,36 @@ class Settings:
     layers: int = 8
     heads: int = 8
     overfit_pairs: int = 0
+    training_only: bool = False
 
     def validate(self):
         if self.stage not in STAGES or self.cluster not in ("das6", "snellius"):
             raise ValueError("Invalid stage or cluster")
-        if min(self.scene_count, self.hours, self.pairs_per_job, self.train_steps,
-               self.effective_batch, self.points_per_trajectory, self.seeds_per_point) <= 0:
+        if (
+            min(
+                self.scene_count,
+                self.hours,
+                self.pairs_per_job,
+                self.train_steps,
+                self.effective_batch,
+                self.points_per_trajectory,
+                self.seeds_per_point,
+            )
+            <= 0
+        ):
             raise ValueError("Counts, steps and walltime must be positive")
         if min(self.sampling_seed, self.scene_start) < 0:
             raise ValueError("Seeds must be nonnegative")
-        if min(self.width, self.layers, self.heads) < 1 or self.architecture not in ("vit", "mlp") or self.width % self.heads:
+        if (
+            min(self.width, self.layers, self.heads) < 1
+            or self.architecture not in ("vit", "mlp")
+            or self.width % self.heads
+        ):
             raise ValueError("Invalid adapter architecture")
         if self.overfit_pairs < 0:
             raise ValueError("overfit_pairs cannot be negative")
+        if self.training_only and self.stage != 5:
+            raise ValueError("training_only is only available for stage 5")
         if self.hours * 60 != int(self.hours * 60):
             raise ValueError("Walltime must be a whole number of minutes")
 

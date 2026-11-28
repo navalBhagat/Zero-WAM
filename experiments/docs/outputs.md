@@ -10,11 +10,13 @@ trials/TASK/scene_SLOT_noise_SEED/METHOD/{config.json,results.csv,videos,diagnos
 trials/TASK/scene_SLOT_noise_SEED/METHOD/noise/{demo.pt,initial.pt,history,pairs,chunks.jsonl}
 pairs/PAIR_ID/{record.json,pairs/chunk_NNNN.pt}       # fixed-history collection
 jobs/train/{adapter.pt,latest.pt,training.jsonl}      # stage 5
+quality/{summary.json,tasks.csv,worst_examples.csv}  # quality command
 trials.csv, success.csv, timing.csv, analysis.json, collection.json, success.png
 ```
 
-`adapter.pt` is the best validation checkpoint; `latest.pt` includes optimizer and
-RNG state for resume. Initial Gaussian/recovered noise is saved for every oracle
+`adapter.pt` is selected by validation MSE in full training, or by training-subset
+MSE in overfit diagnostics. Overfit runs do not read validation/test tensors.
+`latest.pt` includes optimizer and RNG state for resume. Initial Gaussian/recovered noise is saved for every oracle
 chunk. Collection contexts refer to shared demo/history files instead of copying
 all histories per seed. Partial attempts are archived, not combined with new files.
 
